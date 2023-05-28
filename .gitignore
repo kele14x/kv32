@@ -1,0 +1,7 @@
+prj/
+
+*.bak
+*.bkp
+*.jou
+*.log
+*~
