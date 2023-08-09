@@ -1,6 +1,6 @@
 """RV32I register file."""
-
 import numpy as np
+from numpy import uint32
 
 
 class Regfile:
@@ -10,11 +10,18 @@ class Regfile:
         pass
 
     def rst(self):
+        """Reset all registers."""
         self._reg = np.zeros(32, "uint32")
 
-    def get(self, a):
-        return self._reg[a]
+    def read(self, addr: uint32):
+        """Read a register."""
+        assert isinstance(addr, uint32)
+        return self._reg[addr]
 
-    def set(self, a, d):
-        if not a == 0:
-            self._reg[a] = d.astype("uint32")
+    def write(self, addr: uint32, data: uint32):
+        """Write a register."""
+        assert isinstance(addr, uint32)
+        assert isinstance(data, uint32)
+        if addr:
+            # x0 is always 0
+            self._reg[addr] = data

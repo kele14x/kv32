@@ -1,29 +1,47 @@
 import numpy as np
-
+from numpy import uint32, int32, bool_
 from rvsim.Memory import Memory
 from rvsim.Regfile import Regfile
 
 
 class Core:
-    pc = np.uint32(0)
+    pc = uint32(0)
     regfile = Regfile()
     mem = Memory()
 
     def __init__(self):
         pass
 
-    def rst(self):
+    def rst(self, pc=0):
         """Reset the core."""
-        self.pc = np.uint32(0)
+        self.pc = uint32(pc)
         self.regfile.rst()
 
     def load(self, fn):
         """Load data file into memory."""
-        raise NotImplementedError
+        addr = uint32(0)
+        with open(fn, encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('@'):
+                    # Set addr to specified location
+                    addr = uint32(int(line[2:], 16))
+                else:
+                    words = line.split(' ')
+                    k = 0
+                    data = uint32(0)
+                    for w in words:
+                        data = data | uint32(int(w, 16)) << uint32(k * 8)
+                        if k == 3:
+                            self.mem.write_aligned(addr, data)
+                            addr += uint32(4)
+                            data = uint32(0)
+                            k = 0
+                        else:
+                            k += 1
 
     def step(self):
         inst = self.fetch()
-        print('[0x%08x]0x%08x: ' % (self.pc, inst), end='')
+        print('[%08x]%08x: ' % (self.pc, inst), end='')
 
         (con, pc_next, asm) = self.exec(inst)
         print('%s' % asm)
@@ -31,10 +49,11 @@ class Core:
         self.pc = pc_next
         return con
 
-    def run(self):
+    def run(self, cnt=-1):
         con = True
-        while con:
+        while con and cnt > 0:
             con = self.step()
+            cnt -= 1
         print('Core pause at 0x%08x' % self.pc)
 
     def fetch(self):
@@ -73,12 +92,12 @@ class Core:
                     | is_op_imm | is_op | is_system | is_auipc | is_lui)
 
         con = is_legal
-        pc_next = self.pc + 4
+        pc_next = self.pc + uint32(4)
         asm = 'Illegal instruction'
 
         # Register lookup
-        rs1d = self.regfile.get(rs1)
-        rs2d = self.regfile.get(rs2)
+        rs1d = self.regfile.read(rs1).astype(int32)
+        rs2d = self.regfile.read(rs2).astype(int32)
 
         # Immediate unite
         [imm_i, imm_s, imm_b, imm_j, imm_u] = Core.imm_decode(inst)
@@ -111,37 +130,37 @@ class Core:
 
         # LOAD
         if is_load:
-            addr = rs1d + imm.astype('uint32')
+            addr = rs1d.astype(uint32) + imm.astype(uint32)
             if funct3 == 0:  # LB
                 asm = 'lb x%d, %d(x%d)' % (rd, imm, rs1)
-                self.regfile.set(rd, self.mem.read(addr, 1))
+                self.regfile.write(rd, self.mem.read(addr, 1))
             elif funct3 == 1:  # LH
                 asm = 'lh x%d, %d(x%d)' % (rd, imm, rs1)
-                self.regfile.set(rd, self.mem.read(addr, 2))
+                self.regfile.write(rd, self.mem.read(addr, 2))
             elif funct3 == 2:  # LW
                 asm = 'lw x%d, %d(x%d)' % (rd, imm, rs1)
-                self.regfile.set(rd, self.mem.read(addr, 4))
+                self.regfile.write(rd, self.mem.read(addr, 4))
             elif funct3 == 4:  # LBU
                 asm = 'lbu x%d, %d(x%d)' % (rd, imm, rs1)
-                self.regfile.set(rd, self.mem.read(addr, 1) & np.uint32(0x000000FF))
+                self.regfile.write(rd, self.mem.read(addr, 1) & uint32(0x000000FF))
             elif funct3 == 5:  # LHU
                 asm = 'lhu x%d, %d(x%d)' % (rd, imm, rs1)
-                self.regfile.set(rd, self.mem.read(addr, 1) & np.uint32(0x0000FFFF))
+                self.regfile.write(rd, self.mem.read(addr, 1) & uint32(0x0000FFFF))
             else:
                 con = False
 
         # STORE
         elif is_store:
-            addr = rs1d + imm.astype('uint32')
+            addr = rs1d.astype(uint32) + imm.astype(uint32)
             if funct3 == 0:  # SB
                 asm = 'sb x%d, %d(x%d)' % (rs2, imm, rs1)
-                self.mem.write(addr, rs2d, 1)
+                self.mem.write(addr, rs2d.astype(uint32), 1)
             elif funct3 == 1:  # SH
                 asm = 'sh x%d, %d(x%d)' % (rs2, imm, rs1)
-                self.mem.write(addr, rs2d, 2)
+                self.mem.write(addr, rs2d.astype(uint32), 2)
             elif funct3 == 2:  # SW
                 asm = 'sw x%d, %d(x%d)' % (rs2, imm, rs1)
-                self.mem.write(addr, rs2d, 4)
+                self.mem.write(addr, rs2d.astype(uint32), 4)
             else:
                 con = False
 
@@ -163,13 +182,13 @@ class Core:
                 con = False
             b = Core.bru(funct3, rs1d, rs2d)
             if b:
-                pc_next = Core.alu(0, 0, self.pc, imm)
+                pc_next = self.pc + imm.astype(uint32)
 
         # JALR
         elif is_jalr:
             asm = 'jarl x%d, x%d, %d' % (rd, rs1, imm)
-            self.regfile.set(rd, pc_next)
-            pc_next = rs1d + imm.astype('uint32')
+            self.regfile.write(rd, pc_next)
+            pc_next = rs1d.astype(uint32) + imm.astype(uint32)
 
         # MISC-MEM
         elif is_misc_mem:
@@ -179,19 +198,12 @@ class Core:
         # JAL
         elif is_jal:
             asm = 'jar x%d, %d' % (rd, imm)
-            self.regfile.set(rd, pc_next)
-            pc_next = self.pc + imm.astype('uint32')
+            self.regfile.write(rd, pc_next)
+            pc_next = self.pc + imm.astype(uint32)
 
         # OP-IMM
         elif is_op_imm:
-            if funct7 == np.uint32(0):
-                alt = False
-            elif funct7 == np.uint32(0x20):
-                alt = True
-            else:
-                alt = False
-                con = False
-
+            alt = np.bool_(False)
             if funct3 == 0:
                 asm = 'addi x%d, x%d, %d' % (rd, rs1, imm)
             elif funct3 == 1:
@@ -203,6 +215,7 @@ class Core:
             elif funct3 == 4:
                 asm = 'xori x%d, x%d, %d' % (rd, rs1, imm)
             elif funct3 == 5:
+                alt = funct7 == uint32(0x20)
                 if not alt:
                     asm = 'srli x%d, x%d, %d' % (rd, rs1, imm)
                 else:
@@ -213,18 +226,11 @@ class Core:
                 asm = 'andi x%d, x%d, %d' % (rd, rs1, imm)
             else:
                 con = False
-            self.regfile.set(rd, Core.alu(funct3, alt, rs1d, imm))
+            self.regfile.write(rd, Core.alu(funct3, alt, rs1d, imm).astype(uint32))
 
         # OP
         elif is_op:
-            if funct7 == np.uint32(0):
-                alt = False
-            elif funct7 == np.uint32(0x20):
-                alt = True
-            else:
-                alt = False
-                con = False
-
+            alt = funct7 == uint32(0x20)
             if funct3 == 0:
                 if not alt:
                     asm = 'add x%d, x%d, x%d' % (rd, rs1, rs2)
@@ -249,7 +255,7 @@ class Core:
                 asm = 'and x%d, x%d, x%d' % (rd, rs1, rs2)
             else:
                 con = False
-            self.regfile.set(rd, Core.alu(funct3, alt, rs1d, rs2d))
+            self.regfile.write(rd, Core.alu(funct3, alt, rs1d, rs2d).astype(uint32))
 
         # SYSTEM
         elif is_system:
@@ -262,119 +268,129 @@ class Core:
         # AUIPC
         elif is_auipc:
             asm = 'auipc x%d, %d' % (rd, imm)
-            self.regfile.set(rd, self.pc + imm.astype('uint32'))
+            self.regfile.write(rd, self.pc + imm.astype('uint32'))
 
         # LUI
         elif is_lui:
             asm = 'lui x%d, %d' % (rd, imm)
-            self.regfile.set(rd, imm)
+            self.regfile.write(rd, imm.astype(uint32))
 
         return con, pc_next, asm
 
     @staticmethod
     def op_decode(inst):
         """Operation decode. Note: based on the opcode, not all fields are valid."""
-        opcode = inst.astype('uint32') & np.uint32(0x7F)
-        rd = (inst.astype('uint32') >> 7) & np.uint32(0x1F)
-        rs1 = (inst.astype('uint32') >> 15) & np.uint32(0x1F)
-        rs2 = (inst.astype('uint32') >> 20) & np.uint32(0x1F)
-        funct3 = (inst.astype('uint32') >> 12) & np.uint32(0x7)
-        funct7 = (inst.astype('uint32') >> 25) & np.uint32(0x7F)
+        assert isinstance(inst, uint32)
+        opcode = inst & uint32(0x7F)
+        rd = (inst >> uint32(7)) & uint32(0x1F)
+        rs1 = (inst >> uint32(15)) & uint32(0x1F)
+        rs2 = (inst >> uint32(20)) & uint32(0x1F)
+        funct3 = (inst >> uint32(12)) & uint32(0x7)
+        funct7 = (inst >> uint32(25)) & uint32(0x7F)
 
         return opcode, rd, rs1, rs2, funct3, funct7
 
     @staticmethod
-    def imm_decode(inst):
+    def imm_decode(inst: uint32):
         """Immediate decode. Note: based on the opcode, only one or none of them is valid."""
+        assert isinstance(inst, uint32)
         # I-immediate
         # inst[31:20] -> imm[11:0]
-        imm_i = inst & np.uint32(0xFFF00000)
+        imm_i = inst & uint32(0xFFF00000)
         # Sign-extended imm[11]
-        imm_i = imm_i.astype('int32') >> 20
+        imm_i = imm_i.astype(int32) >> int32(20)
 
         # S-immediate
         # inst[31:25] -> imm[11:5]
-        imm_s = inst & np.uint32(0xFE000000)
+        imm_s = inst & uint32(0xFE000000)
         # inst[11:7] -> imm[4:0]
-        imm_s |= (inst & np.uint32(0x00000F80)) << 13
+        imm_s |= (inst & uint32(0x00000F80)) << uint32(13)
         # Sign-extended imm[11]
-        imm_s = imm_s.astype('int32') >> 20
+        imm_s = imm_s.astype(int32) >> int32(20)
 
         # B-immediate
         # inst[31] -> imm[12]
-        imm_b = inst & np.uint32(0x80000000)
+        imm_b = inst & uint32(0x80000000)
         # inst[30:25] -> imm[10:5]
-        imm_b |= (inst & np.uint32(0x7E000000)) >> 1
+        imm_b |= (inst & uint32(0x7E000000)) >> uint32(1)
         # inst[11:8] -> imm[4:1]
-        imm_b |= (inst & np.uint32(0x00000F00)) << 12
+        imm_b |= (inst & uint32(0x00000F00)) << uint32(12)
         # inst[7] -> imm[11]
-        imm_b |= (inst & np.uint32(0x00000080)) << 23
+        imm_b |= (inst & uint32(0x00000080)) << uint32(23)
         # Sign-extended imm[12]
-        imm_b = imm_b.astype('int32') >> 19
+        imm_b = imm_b.astype(int32) >> int32(19)
 
         # J - immediate
         # inst[31] -> imm[20]
-        imm_j = inst & np.uint32(0x80000000)
+        imm_j = inst & uint32(0x80000000)
         # inst[30:21] -> imm[10:1]
-        imm_j |= (inst & np.uint32(0x7FE00000)) >> 9
+        imm_j |= (inst & uint32(0x7FE00000)) >> uint32(9)
         # inst[20] -> imm[11]
-        imm_j |= (inst & np.uint32(0x00100000)) << 2
+        imm_j |= (inst & uint32(0x00100000)) << uint32(2)
         # inst[19:12] -> imm[19:12]
-        imm_j |= (inst & np.uint32(0x000FF000)) << 11
+        imm_j |= (inst & uint32(0x000FF000)) << uint32(11)
         # Sign-extended imm[20]
-        imm_j = imm_j.astype('int32') >> 11
+        imm_j = imm_j.astype(int32) >> int32(11)
 
         # U-immediate
         # inst[31:12] -> imm[31:12]
-        imm_u = inst & np.uint32(0xFFFFF000)
-        imm_u = imm_u.astype('int32')
+        imm_u = inst & uint32(0xFFFFF000)
+        imm_u = imm_u.astype(int32)
 
         return imm_i, imm_s, imm_b, imm_j, imm_u
 
+
     @staticmethod
     def alu(funct, alt, op1, op2):
-        """ALU, funct select the ALU operation, alt select the alternative version of operation."""
+        """ALU."""
+        assert isinstance(funct, uint32)
+        assert isinstance(alt, bool_)
+        assert isinstance(op1, int32)
+        assert isinstance(op2, int32)
         if funct == 0:
-            if alt == 0:  # ADD/ADDI
-                res = op1.astype('int32') + op2.astype('int32')
+            if not alt:  # ADD/ADDI
+                res = op1 + op2
             else:  # SUB
-                res = op1.astype('int32') - op2.astype('int32')
+                res = op1 - op2
         elif funct == 1:  # SLL/SLLI
-            res = op1.astype('int32') << (op2.astype('uint32') & np.uint32(0x3F))
+            res = op1 << (op2 & uint32(0x3F))
         elif funct == 2:  # SLT/SLTI
-            res = np.int32(op1.astype('int32') < op2.astype('int32'))
+            res = op1 < op2
         elif funct == 3:  # SLTU/SLTIU
-            res = np.int32(op1.astype('uint32') < op2.astype('uint32'))
+            res = op1.astype(uint32) < op2.astype(uint32)
         elif funct == 4:  # XOR/XORI
-            res = op1.astype('int32') ^ op2.astype('int32')
+            res = op1 ^ op2
         elif funct == 5:
-            if alt == 0:  # SRL
-                res = (op1.astype('uint32') >> (op2.astype('uint32') & np.uint32(0x3F))).astype('int32')
+            if not alt:  # SRL
+                res = op1.astype(uint32) >> (op2 & uint32(0x3F))
             else:  # SRA
-                res = op1.astype('int32') >> (op2.astype('uint32') & np.uint32(0x3F))
+                res = op1 >> (op2 & uint32(0x3F))
         elif funct == 6:  # OR/ORI
-            res = op1.astype('int32') | op2.astype('int32')
+            res = op1 | op2
         elif funct == 7:  # AND/ANDI
-            res = op1.astype('int32') & op2.astype('int32')
+            res = op1 & op2
         else:
-            res = np.int32(0)
-        return res
+            raise ValueError
+        return res.astype(int32)
 
     @staticmethod
     def bru(funct, op1, op2):
-        # Branch or not
+        """Branch unite."""
+        assert isinstance(funct, uint32)
+        assert isinstance(op1, int32)
+        assert isinstance(op2, int32)
         if funct == 0:  # BEQ
-            res = op1.astype('int32') == op2.astype('int32')
+            res = op1 == op2
         elif funct == 1:  # BNE
-            res = op1.astype('int32') != op2.astype('int32')
+            res = op1 != op2
         elif funct == 4:  # BLT
-            res = op1.astype('int32') < op2.astype('int32')
+            res = op1 < op2
         elif funct == 5:  # BGE
-            res = op1.astype('int32') >= op2.astype('int32')
+            res = op1 >= op2
         elif funct == 6:  # BLTU
-            res = op1.astype('uint32') < op2.astype('uint32')
+            res = op1.astype(uint32) < op2.astype(uint32)
         elif funct == 7:  # BGEU
-            res = op1.astype('uint32') >= op2.astype('uint32')
+            res = op1.astype(uint32) >= op2.astype(uint32)
         else:
-            res = False
+            raise ValueError
         return res
