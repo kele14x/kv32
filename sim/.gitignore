@@ -1,7 +1,0 @@
-# Python
-.idea/
-.pytest_cache/
-__pycache__/
-
-# Python venv
-venv/

@@ -1,6 +1,6 @@
-
-
-`timescale 1 ns / 10 ps
+// File: tb_kv32.sv
+// Brief: Test bench for kv32.
+`timescale 1 ns / 1 ps
 //
 `default_nettype none
 
@@ -8,7 +8,7 @@ module tb_kv32;
 
   logic        clk;
   logic        rst;
-  
+
   logic        halt;
 
   task static reset();
@@ -79,7 +79,7 @@ module tb_kv32;
   initial begin
     $timeformat(-6, 6, " us", 10);
     $display("***Simulation starts");
-    load_hex("boot.hex");
+    // load_hex("boot.hex");
     #10000;
     $finish();
   end
@@ -88,18 +88,18 @@ module tb_kv32;
     $display("***Simulation ends");
   end
 
-//  initial begin
-//    @(posedge clk);
-//    forever begin
-//      if (imem_en) begin
-//        $display("[%t] PC: %x", $realtime, imem_addr);
-//        @(posedge clk);
-//        $display("[%t] Instr: %x", $realtime, imem_dout);
-//        // TODO: maybe add a RISC-V disassmbler here
-//      end
-//      @(posedge clk);
-//    end
-//  end
+  initial begin
+    @(posedge clk);
+    forever begin
+      if (DUT.imem_en) begin
+        $display("[%t] PC: %x", $realtime, DUT.imem_addr);
+        @(posedge clk);
+        $display("[%t] Instr: %x", $realtime, DUT.imem_dout);
+        // TODO: maybe add a RISC-V disassmbler here
+      end
+      @(posedge clk);
+    end
+  end
 
   // DUT
 

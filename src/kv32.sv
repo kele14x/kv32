@@ -1,8 +1,10 @@
+// File: kv32.sv
+// Brief: Simple RISC-V SoC
 `timescale 1 ns / 1 ps
 //
 `default_nettype none
 
-module kv32_top (
+module kv32 (
     input var  clk,
     input var  rst,
     //
@@ -19,7 +21,10 @@ module kv32_top (
   logic [31:0] dmem_din;
   logic [31:0] dmem_dout;
 
-  kv32 i_kv32 (
+
+  kv32_core #(
+      .PC_INIT(32'h0000_1000)
+  )i_core (
       .clk      (clk),
       .rst      (rst),
       //
@@ -36,21 +41,20 @@ module kv32_top (
       .halt     (halt)
   );
 
-  mem #(
-      .MEMORY_SIZE(8192)
+  imem #(
+      .INIT_FILE  ("imem.mem"),
+      .MEMORY_SIZE(4096)
   ) i_imem (
       .clk (clk),
       .rst (rst),
       //
       .en  (imem_en),
-      .we  ('b0),
       .addr(imem_addr),
-      .din ('b0),
       .dout(imem_dout)
   );
 
-  mem #(
-      .MEMORY_SIZE(8192)
+  dmem #(
+      .MEMORY_SIZE(4096)
   ) i_dmem (
       .clk (clk),
       .rst (rst),
