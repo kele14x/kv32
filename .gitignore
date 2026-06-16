@@ -1,0 +1,12 @@
+# Build artifacts
+obj_dir/
+*.vvp
+*.vcd
+
+# IDE / tool files
+*.swp
+*~
+.DS_Store
+
+# Qoder internal
+.qoder/
