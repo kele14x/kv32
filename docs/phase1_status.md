@@ -130,7 +130,7 @@ ADD  x3, x1, x2     # x3 = x1 + x2 = 15
 ## Next Steps
 
 1. **Investigate Pipeline Stall Issue**: Debug why loads after stores don't execute
-2. **Implement CSR Support**: Add control and status registers (mstatus, mepc, mtvec, etc.)
+2. **Implement M-mode CSR Register File**: Add Phase 1 CSR registers (mstatus, misa, mie, mtvec, mscratch, mepc, mcause, mtval, mip, mstatush, mcycle, mcycleh, minstret, minstreth, mcounteren)
 3. **Add Exception Handling**: Implement trap mechanism for illegal instructions and memory faults
 4. **Run riscv-tests**: Validate against official RISC-V compliance tests
 

@@ -140,7 +140,7 @@ Tests are written in C++ (`tb/sim_main.cpp`) using the Verilator API. The C++ te
 
 ### Known Issues
 
-- **OP_SYSTEM handling incomplete**: The decoder sets `reg_write=1` for all SYSTEM instructions without distinguishing ECALL/EBREAK/CSRR*/MRET. This will cause incorrect register writes until CSR support is implemented in Phase 5.
+- **OP_SYSTEM handling incomplete**: The decoder sets `reg_write=1` for all SYSTEM instructions without distinguishing ECALL/EBREAK/CSRR*/MRET. This will cause incorrect register writes until the M-mode CSR register file is implemented (Phase 1 target: mstatus, misa, mie, mtvec, mscratch, mepc, mcause, mtval, mip, mstatush, mcycle, mcycleh, minstret, minstreth, mcounteren). Note: the full privilege mode system (M/S/U mode switching, trap delegation, medeleg/mideleg, sret/mret) is a Phase 5 target.
 - **Missing FENCE instruction**: Opcode `7'b0001111` (MISC-MEM) is not decoded and will trigger `illegal`. Required for `riscv-tests` compatibility.
 - **ALU operation codes duplicated**: `ALU_ADD`, `ALU_SUB`, etc. are defined independently in both `kv32_alu.sv` and `kv32_decoder.sv`. Should be unified into `kv32_pkg` to avoid maintenance risk.
 
@@ -165,11 +165,11 @@ When debugging pipeline issues, inspect Verilator internal signals via `rootp->`
 
 ## Project Phases
 
-1. **Phase 1** (Current — complete): RV32I base integer instruction set
+1. **Phase 1** (Current — complete): RV32I base integer instruction set + M-mode CSR register file (mstatus, misa, mie, mtvec, mscratch, mepc, mcause, mtval, mip, mstatush, mcycle/h, minstret/h, mcounteren)
 2. **Phase 2**: M extension (multiply/divide)
 3. **Phase 3**: C extension (compressed instructions)
 4. **Phase 4**: A extension (atomic operations)
-5. **Phase 5**: Privilege modes (M/S/U)
+5. **Phase 5**: Full privilege modes (M/S/U mode switching, trap delegation, medeleg/mideleg, sret/mret)
 6. **Phase 6**: MMU (virtual memory)
 7. **Phase 7**: F/D extension (floating point)
 8. **Phase 8**: AXI adapter

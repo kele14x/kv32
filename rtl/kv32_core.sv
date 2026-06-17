@@ -1,7 +1,11 @@
-module kv32_core (
+module kv32_core
+  import kv32_pkg::*;
+(
     input  logic        clk,
     input  logic        rst_n,
     input  logic        irq_external_i,
+    input  logic        irq_timer_i,
+    input  logic        irq_software_i,
 
     // External memory interface
     output logic        mem_req,
@@ -32,6 +36,16 @@ module kv32_core (
     // verilator lint_on UNUSEDSIGNAL
     logic        i_valid, d_valid;
     logic [31:0] i_rdata, d_rdata;
+    logic        arb_idle;
+
+    // Arbiter-facing signals (modified by misaligned access handler)
+    logic        d_req_a, d_we_a;
+    logic [31:0] d_addr_a, d_wdata_a;
+    logic [ 1:0] d_size_a;
+    logic [ 3:0] d_be_a;
+    logic        d_excl_a;
+    logic        d_valid_a;
+    logic [31:0] d_rdata_a;
     // Error signals reserved for exception handling (Phase 5)
     // verilator lint_off UNUSEDSIGNAL
     logic        i_err, d_err;
@@ -49,16 +63,16 @@ module kv32_core (
         .i_rdata   (i_rdata),
         .i_err     (i_err),
 
-        .d_req     (d_req),
-        .d_addr    (d_addr),
-        .d_we      (d_we),
-        .d_size    (d_size),
-        .d_wdata   (d_wdata),
-        .d_be      (d_be),
-        .d_excl    (d_excl),
+        .d_req     (d_req_a),
+        .d_addr    (d_addr_a),
+        .d_we      (d_we_a),
+        .d_size    (d_size_a),
+        .d_wdata   (d_wdata_a),
+        .d_be      (d_be_a),
+        .d_excl    (d_excl_a),
         .d_gnt     (d_gnt),
-        .d_valid   (d_valid),
-        .d_rdata   (d_rdata),
+        .d_valid   (d_valid_a),
+        .d_rdata   (d_rdata_a),
         .d_err     (d_err),
 
         .mem_req   (mem_req),
@@ -71,7 +85,8 @@ module kv32_core (
         .mem_gnt   (mem_gnt),
         .mem_valid (mem_valid),
         .mem_rdata (mem_rdata),
-        .mem_err   (mem_err)
+        .mem_err   (mem_err),
+        .arb_idle  (arb_idle)
     );
 
     // Pipeline registers
@@ -88,6 +103,10 @@ module kv32_core (
     logic        reg_write_id, branch_id, jump_id, illegal_id;
     logic        lui_id, auipc_id;
     logic [ 3:0] alu_op_id;
+    csr_op_t     csr_op_id;
+    logic        csr_wen_id, is_csr_id, is_mret_id, use_zimm_id;
+
+    logic        is_ecall_id, is_ebreak_id;
 
     // Register file
     logic [31:0] rs1_data, rs2_data;
@@ -113,7 +132,14 @@ module kv32_core (
         .jump         (jump_id),
         .illegal      (illegal_id),
         .lui          (lui_id),
-        .auipc        (auipc_id)
+        .auipc        (auipc_id),
+        .csr_op       (csr_op_id),
+        .csr_wen      (csr_wen_id),
+        .is_csr       (is_csr_id),
+        .is_mret      (is_mret_id),
+        .use_zimm     (use_zimm_id),
+        .is_ecall     (is_ecall_id),
+        .is_ebreak    (is_ebreak_id)
     );
 
     // EX stage
@@ -133,12 +159,12 @@ module kv32_core (
     );
     logic [31:0] imm_ex;
     logic        use_imm_ex, alu_op_valid_ex, mem_read_ex, mem_write_ex;
-    // illegal_ex reserved for exception handling (Phase 5)
-    // verilator lint_off UNUSEDSIGNAL
     logic        reg_write_ex, branch_ex, jump_ex, illegal_ex;
-    // verilator lint_on UNUSEDSIGNAL
     logic        lui_ex, auipc_ex;
     logic [ 3:0] alu_op_ex;
+    csr_op_t     csr_op_ex;
+    logic        csr_wen_ex, is_csr_ex, is_mret_ex, use_zimm_ex;
+    logic        is_ecall_ex, is_ebreak_ex;
 
     logic [31:0] alu_a, alu_b, alu_result;
     logic [31:0] ex_result;
@@ -151,6 +177,67 @@ module kv32_core (
         .result (alu_result)
     );
 
+    // CSR module signals
+    logic [31:0] csr_rdata;
+    logic [11:0] csr_addr_w;
+    logic [31:0] csr_wdata_w;
+    logic        csr_wen_gated;
+
+    // mtvec[1:0] is the MODE field; we use Direct mode (bits stripped)
+    // verilator lint_off UNUSEDSIGNAL
+    logic [31:0] mtvec_out;
+    // verilator lint_on UNUSEDSIGNAL
+    // mstatus_mie reserved for interrupt handling (Phase 5)
+    // verilator lint_off UNUSEDSIGNAL
+    logic        mstatus_mie;
+    // verilator lint_on UNUSEDSIGNAL
+    logic [31:0] mepc_out;
+    logic        instr_retired;
+
+    // Trap detection signals
+    logic        trap_taken;
+    logic [31:0] trap_pc;
+    logic [31:0] trap_cause;
+    logic [31:0] trap_val;
+
+    assign csr_addr_w    = instr_ex[31:20];
+    assign csr_wdata_w   = use_zimm_ex ? {27'b0, instr_ex[19:15]} : fwd_a;
+    assign csr_wen_gated = csr_wen_ex && !mem_stall && !trap_taken;
+
+    // Instruction retired: valid instruction completing WB that is not a bubble
+    assign instr_retired = reg_write_wb;
+
+    // -------------------------------------------------------------------------
+    // Trap detection (EX stage): illegal, ECALL, EBREAK
+    // RISC-V mcause codes:
+    //   2 = Illegal instruction
+    //   8 = Environment call from U-mode (use 11 for M-mode)
+    //   3 = Breakpoint
+    // In Phase 1 (M-mode only), ECALL uses cause 11.
+    // -------------------------------------------------------------------------
+    always_comb begin
+        trap_taken = 1'b0;
+        trap_pc    = pc_ex;
+        trap_cause = 32'h0;
+        trap_val   = 32'h0;
+
+        if (!mem_stall) begin
+            if (illegal_ex) begin
+                trap_taken = 1'b1;
+                trap_cause = 32'd2;          // Illegal instruction
+                trap_val   = instr_ex;       // The bad instruction
+            end else if (is_ecall_ex) begin
+                trap_taken = 1'b1;
+                trap_cause = 32'd11;         // Environment call from M-mode
+                trap_val   = 32'h0;
+            end else if (is_ebreak_ex) begin
+                trap_taken = 1'b1;
+                trap_cause = 32'd3;          // Breakpoint
+                trap_val   = pc_ex;
+            end
+        end
+    end
+
     // Branch comparison
     logic branch_taken;
     logic [31:0] branch_target;
@@ -159,14 +246,17 @@ module kv32_core (
         branch_taken  = 1'b0;
         branch_target = pc_ex + 4;
 
-        if (branch_ex) begin
+        if (is_mret_ex) begin
+            branch_taken  = 1'b1;
+            branch_target = mepc_out;
+        end else if (branch_ex) begin
             unique case (funct3_ex)
-                3'b000: branch_taken = (rs1_data == rs2_data);   // BEQ
-                3'b001: branch_taken = (rs1_data != rs2_data);   // BNE
-                3'b100: branch_taken = ($signed(rs1_data) < $signed(rs2_data));   // BLT
-                3'b101: branch_taken = ($signed(rs1_data) >= $signed(rs2_data));  // BGE
-                3'b110: branch_taken = (rs1_data < rs2_data);    // BLTU
-                3'b111: branch_taken = (rs1_data >= rs2_data);   // BGEU
+                3'b000: branch_taken = (fwd_a == fwd_b);          // BEQ
+                3'b001: branch_taken = (fwd_a != fwd_b);          // BNE
+                3'b100: branch_taken = ($signed(fwd_a) < $signed(fwd_b));   // BLT
+                3'b101: branch_taken = ($signed(fwd_a) >= $signed(fwd_b));  // BGE
+                3'b110: branch_taken = (fwd_a < fwd_b);           // BLTU
+                3'b111: branch_taken = (fwd_a >= fwd_b);          // BGEU
                 default: branch_taken = 1'b0;
             endcase
 
@@ -177,9 +267,9 @@ module kv32_core (
 
         if (jump_ex) begin
             branch_taken = 1'b1;
-            if (instr_ex[2]) begin // JALR
-                branch_target = (rs1_data + imm_ex) & ~32'h1;
-            end else begin // JAL
+            if (!instr_ex[3]) begin // JALR (opcode bit3=0: 1100111)
+                branch_target = (fwd_a + imm_ex) & ~32'h1;
+            end else begin // JAL (opcode bit3=1: 1101111)
                 branch_target = pc_ex + imm_ex;
             end
         end
@@ -191,7 +281,9 @@ module kv32_core (
 
     // EX result mux
     always_comb begin
-        if (lui_ex) begin
+        if (is_csr_ex) begin
+            ex_result = csr_rdata;
+        end else if (lui_ex) begin
             ex_result = imm_ex;
         end else if (alu_op_valid_ex || auipc_ex) begin
             ex_result = alu_result;
@@ -260,6 +352,223 @@ module kv32_core (
         end
     end
 
+    // -------------------------------------------------------------------------
+    // Misaligned access handler: splits misaligned loads/stores into two
+    // aligned word accesses. Adds ~4 cycles of latency for misaligned accesses.
+    //
+    // Non-crossing case (SH at offset 1): both bytes fit in one word,
+    // handled inline without the state machine.
+    // -------------------------------------------------------------------------
+    typedef enum logic [2:0] {
+        MA_IDLE,
+        MA_FIRST,     // First access in flight (arbiter D_PORT_ACTIVE)
+        MA_WAIT,      // First access done, suppress d_req until arbiter IDLE
+        MA_SECOND,    // Second access being driven (arbiter IDLE → latch → D_PORT_ACTIVE)
+        MA_HOLD       // Second access in flight (d_valid suppressed until done)
+    } ma_state_t;
+
+    // verilator lint_off UNUSEDSIGNAL
+    ma_state_t   ma_state;
+    logic [31:0] ma_first_rdata;
+    logic [ 1:0] ma_offset;
+    logic [ 1:0] ma_size;
+    // verilator lint_on UNUSEDSIGNAL
+
+    // Misalignment detection
+    logic word_crossing;
+    logic non_crossing_ma;
+    always_comb begin
+        word_crossing  = 1'b0;
+        non_crossing_ma = 1'b0;
+        if (d_req && ma_state == MA_IDLE) begin
+            if (d_size == 2'b01 && d_addr[0]) begin
+                if (d_addr[1]) word_crossing  = 1'b1;
+                else           non_crossing_ma = 1'b1;
+            end else if (d_size == 2'b10 && d_addr[1:0] != 2'b00) begin
+                word_crossing = 1'b1;
+            end
+        end
+    end
+
+    // Extract raw halfword from pipeline-positioned d_wdata
+    // Pipeline register places halfword in bytes 0,1 (addr[1]=0) or bytes 2,3 (addr[1]=1)
+    logic [15:0] raw_hw;
+    assign raw_hw = d_addr[1] ? d_wdata[31:16] : d_wdata[15:0];
+
+    // Helper: compute first-access byte enables and write data (crossing case)
+    logic [3:0] first_be;
+    logic [31:0] first_wdata;
+    always_comb begin
+        first_be    = d_be;
+        first_wdata = d_wdata;
+        if (d_size == 2'b01) begin
+            // SH crossing (offset 3 only): low byte to byte 3
+            first_be    = 4'b1000;
+            first_wdata = {raw_hw[7:0], 24'h0};
+        end else begin
+            // SW crossing
+            unique case (d_addr[1:0])
+                2'b01: begin first_be = 4'b1110; first_wdata = {d_wdata[23:0], 8'h0};  end
+                2'b10: begin first_be = 4'b1100; first_wdata = {d_wdata[15:0], 16'h0}; end
+                2'b11: begin first_be = 4'b1000; first_wdata = {d_wdata[7:0], 24'h0};  end
+                default: begin first_be = 4'b1111; first_wdata = d_wdata; end
+            endcase
+        end
+    end
+
+    // Helper: compute second-access byte enables and write data (crossing case)
+    logic [3:0] second_be;
+    logic [31:0] second_wdata;
+    always_comb begin
+        second_be    = 4'b1111;
+        second_wdata = d_wdata;
+        if (d_we) begin
+            if (ma_size == 2'b01) begin
+                // SH crossing (offset 3): high byte to byte 0 of second word
+                second_wdata = {24'h0, raw_hw[15:8]};
+                second_be    = 4'b0001;
+            end else begin
+                // SW: remaining bytes go to low positions of second word
+                unique case (ma_offset)
+                    2'b01: begin second_wdata = {24'h0, d_wdata[31:24]}; second_be = 4'b0001; end
+                    2'b10: begin second_wdata = {16'h0, d_wdata[31:16]}; second_be = 4'b0011; end
+                    2'b11: begin second_wdata = {8'h0,  d_wdata[31:8]};  second_be = 4'b0111; end
+                    default: begin second_wdata = d_wdata; second_be = 4'b1111; end
+                endcase
+            end
+        end
+    end
+
+    // Alignment handler state machine
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            ma_state       <= MA_IDLE;
+            ma_first_rdata <= 32'h0;
+            ma_offset      <= 2'b00;
+            ma_size        <= 2'b00;
+        end else begin
+            unique case (ma_state)
+                MA_IDLE: begin
+                    if (word_crossing) begin
+                        ma_state  <= MA_FIRST;
+                        ma_offset <= d_addr[1:0];
+                        ma_size   <= d_size;
+                    end
+                end
+                MA_FIRST: begin
+                    if (d_valid_a) begin
+                        ma_state       <= MA_WAIT;
+                        ma_first_rdata <= d_rdata_a;
+                    end
+                end
+                MA_WAIT: begin
+                    ma_state <= MA_SECOND;
+                end
+                MA_SECOND: begin
+                    if (arb_idle) begin
+                        ma_state <= MA_HOLD;
+                    end
+                end
+                MA_HOLD: begin
+                    if (d_valid_a) begin
+                        ma_state <= MA_IDLE;
+                    end
+                end
+                default: ma_state <= MA_IDLE;
+            endcase
+        end
+    end
+
+    // Arbiter-facing d-port signals (with alignment handling)
+    always_comb begin
+        // Default: pass through
+        d_req_a   = d_req;
+        d_addr_a  = d_addr;
+        d_we_a    = d_we;
+        d_size_a  = d_size;
+        d_wdata_a = d_wdata;
+        d_be_a    = d_be;
+        d_excl_a  = d_excl;
+
+        unique case (ma_state)
+            MA_IDLE: begin
+                if (non_crossing_ma) begin
+                    // SH at offset 1: both bytes in same word, no splitting
+                    d_addr_a = {d_addr[31:2], 2'b00};
+                    d_be_a   = 4'b0110;
+                    if (d_we) d_wdata_a = {d_wdata[23:0], 8'h0};
+                end else if (word_crossing) begin
+                    d_req_a   = 1'b0;
+                    d_addr_a  = {d_addr[31:2], 2'b00};
+                    d_be_a    = first_be;
+                    if (d_we) d_wdata_a = first_wdata;
+                end
+            end
+
+            MA_FIRST: begin
+                d_req_a   = d_req;
+                d_addr_a  = {d_addr[31:2], 2'b00};
+                d_be_a    = first_be;
+                if (d_we) d_wdata_a = first_wdata;
+            end
+
+            MA_WAIT: begin
+                d_req_a   = 1'b0;
+                d_addr_a  = {d_addr[31:2], 2'b00};
+                d_be_a    = first_be;
+                if (d_we) d_wdata_a = first_wdata;
+            end
+
+            MA_SECOND: begin
+                d_addr_a  = {d_addr[31:2], 2'b00} + 32'd4;
+                d_wdata_a = second_wdata;
+                d_be_a    = second_be;
+            end
+
+            MA_HOLD: begin
+                d_addr_a  = {d_addr[31:2], 2'b00} + 32'd4;
+                d_wdata_a = second_wdata;
+                d_be_a    = second_be;
+            end
+
+            default: ;
+        endcase
+    end
+
+    // Combine misaligned load data from two word reads
+    always_comb begin
+        d_valid = d_valid_a;
+        d_rdata = d_rdata_a;
+
+        if (ma_state != MA_IDLE) begin
+            d_valid = 1'b0;
+        end
+
+        if (ma_state == MA_HOLD && d_valid_a) begin
+            d_valid = 1'b1;
+            unique case (ma_size)
+                2'b01: begin // Halfword (offset 3 only)
+                    d_rdata = {d_rdata_a[7:0], ma_first_rdata[31:24], 16'h0};
+                end
+                2'b10: begin // Word
+                    unique case (ma_offset)
+                        2'b01: d_rdata = {d_rdata_a[7:0],  ma_first_rdata[31:8]};
+                        2'b10: d_rdata = {d_rdata_a[15:0], ma_first_rdata[31:16]};
+                        2'b11: d_rdata = {d_rdata_a[23:0], ma_first_rdata[31:24]};
+                        default: d_rdata = d_rdata_a;
+                    endcase
+                end
+                default: d_rdata = d_rdata_a;
+            endcase
+        end
+
+        // Non-crossing misaligned load (SH at offset 1): shift rdata right
+        // so the existing load extraction picks up bytes 1,2 correctly
+        if (non_crossing_ma && !d_we && d_valid_a) begin
+            d_rdata = {8'h0, d_rdata_a[31:8]};
+        end
+    end
+
     // WB stage
     logic [ 4:0] rd_wb;
     logic        reg_write_wb;
@@ -312,14 +621,19 @@ module kv32_core (
     assign id_stall  = load_use_hazard || mem_stall || if_wait;
     assign if_stall  = if_wait || load_use_hazard || mem_stall;
 
-    assign if_flush = branch_taken;
-    assign id_flush = branch_taken;
-    assign ex_flush = 1'b0;
+    // Flush: branch_taken OR trap_taken both flush IF and ID stages
+    assign if_flush = branch_taken || trap_taken;
+    assign id_flush = branch_taken || trap_taken;
+    assign ex_flush = trap_taken;  // Trap also squashes the faulting instruction in EX
 
     // IF stage
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pc_if <= 32'h0;
+            i_req <= 1'b1;
+        end else if (trap_taken) begin
+            // Trap: redirect to mtvec (highest priority)
+            pc_if <= {mtvec_out[31:2], 2'b00};  // MODE=Direct: jump to BASE
             i_req <= 1'b1;
         end else if (if_flush) begin
             pc_if <= branch_target;
@@ -368,6 +682,13 @@ module kv32_core (
             illegal_ex      <= 1'b0;
             lui_ex          <= 1'b0;
             auipc_ex        <= 1'b0;
+            csr_op_ex       <= CSR_OP_NONE;
+            csr_wen_ex      <= 1'b0;
+            is_csr_ex       <= 1'b0;
+            is_mret_ex      <= 1'b0;
+            use_zimm_ex     <= 1'b0;
+            is_ecall_ex     <= 1'b0;
+            is_ebreak_ex    <= 1'b0;
         end else if (ex_stall) begin
             // Backpressure from MEM stage — freeze ID/EX
         end else if (ex_flush) begin
@@ -378,17 +699,29 @@ module kv32_core (
             jump_ex       <= 1'b0;
             lui_ex        <= 1'b0;
             auipc_ex      <= 1'b0;
+            csr_wen_ex    <= 1'b0;
+            is_csr_ex     <= 1'b0;
+            is_mret_ex    <= 1'b0;
+            illegal_ex    <= 1'b0;
+            is_ecall_ex   <= 1'b0;
+            is_ebreak_ex  <= 1'b0;
         end else if (load_use_hazard || if_wait) begin
             // Insert bubble: load-use hazard or IF waiting for instruction
-            reg_write_ex  <= 1'b0;
-            mem_read_ex   <= 1'b0;
-            mem_write_ex  <= 1'b0;
-            branch_ex     <= 1'b0;
-            jump_ex       <= 1'b0;
-            lui_ex        <= 1'b0;
-            auipc_ex      <= 1'b0;
+            reg_write_ex    <= 1'b0;
+            mem_read_ex     <= 1'b0;
+            mem_write_ex    <= 1'b0;
+            branch_ex       <= 1'b0;
+            jump_ex         <= 1'b0;
+            lui_ex          <= 1'b0;
+            auipc_ex        <= 1'b0;
             alu_op_valid_ex <= 1'b0;
-            rd_ex         <= 5'h0;
+            rd_ex           <= 5'h0;
+            csr_wen_ex      <= 1'b0;
+            is_csr_ex       <= 1'b0;
+            is_mret_ex      <= 1'b0;
+            illegal_ex      <= 1'b0;
+            is_ecall_ex     <= 1'b0;
+            is_ebreak_ex    <= 1'b0;
         end else begin
             pc_ex           <= pc_id;
             instr_ex        <= instr_id;
@@ -408,6 +741,13 @@ module kv32_core (
             illegal_ex      <= illegal_id;
             lui_ex          <= lui_id;
             auipc_ex        <= auipc_id;
+            csr_op_ex       <= csr_op_id;
+            csr_wen_ex      <= csr_wen_id;
+            is_csr_ex       <= is_csr_id;
+            is_mret_ex      <= is_mret_id;
+            use_zimm_ex     <= use_zimm_id;
+            is_ecall_ex     <= is_ecall_id;
+            is_ebreak_ex    <= is_ebreak_id;
         end
     end
 
@@ -424,6 +764,12 @@ module kv32_core (
             mem_size_mem  <= 2'b00;
             funct3_mem    <= 3'b000;
             mem_be_mem    <= 4'h0;
+        end else if (trap_taken) begin
+            // Trap squashes the faulting instruction — insert bubble
+            mem_read_mem  <= 1'b0;
+            mem_write_mem <= 1'b0;
+            reg_write_mem <= 1'b0;
+            rd_mem        <= 5'h0;
         end else if (!mem_stall) begin
             pc_mem        <= pc_ex;
             rd_mem        <= rd_ex;
@@ -490,10 +836,27 @@ module kv32_core (
         end
     end
 
-    // Unused interrupt input (for future use)
-    // verilator lint_off UNUSEDSIGNAL
-    logic unused_irq;
-    assign unused_irq = irq_external_i;
-    // verilator lint_on UNUSEDSIGNAL
+    // CSR module instantiation
+    kv32_csr u_csr (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .csr_addr     (csr_addr_w),
+        .csr_wdata    (csr_wdata_w),
+        .csr_op       (csr_op_ex),
+        .csr_wen      (csr_wen_gated),
+        .csr_rdata    (csr_rdata),
+        .irq_external (irq_external_i),
+        .irq_timer    (irq_timer_i),
+        .irq_software (irq_software_i),
+        .trap_taken   (trap_taken),
+        .trap_pc      (trap_pc),
+        .trap_cause   (trap_cause),
+        .trap_val     (trap_val),
+        .mret_taken   (is_mret_ex && !mem_stall),
+        .mtvec_out    (mtvec_out),
+        .mepc_out     (mepc_out),
+        .mstatus_mie  (mstatus_mie),
+        .instr_retired(instr_retired)
+    );
 
 endmodule

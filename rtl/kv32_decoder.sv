@@ -1,4 +1,6 @@
-module kv32_decoder (
+module kv32_decoder
+  import kv32_pkg::*;
+(
     input  logic [31:0] instr,
 
     // Decoded fields
@@ -19,32 +21,30 @@ module kv32_decoder (
     output logic        jump,         // Jump instruction (JAL/JALR)
     output logic        illegal,      // Illegal instruction
     output logic        lui,          // LUI instruction
-    output logic        auipc         // AUIPC instruction
+    output logic        auipc,        // AUIPC instruction
+
+    // CSR / System control signals
+    output csr_op_t    csr_op,        // CSR operation type
+    output logic       csr_wen,       // CSR write enable
+    output logic       is_csr,        // CSR instruction (rd gets CSR read value)
+    output logic       is_mret,       // MRET instruction
+    output logic       use_zimm,      // Use zimm instead of rs1 (CSR immediate variants)
+    output logic       is_ecall,      // ECALL instruction
+    output logic       is_ebreak      // EBREAK instruction
 );
 
     // RV32I opcodes
-    localparam logic [6:0] OP_LUI    = 7'b0110111,
-                           OP_AUIPC  = 7'b0010111,
-                           OP_JAL    = 7'b1101111,
-                           OP_JALR   = 7'b1100111,
-                           OP_BRANCH = 7'b1100011,
-                           OP_LOAD   = 7'b0000011,
-                           OP_STORE  = 7'b0100011,
-                           OP_IMM    = 7'b0010011,
-                           OP_REG    = 7'b0110011,
-                           OP_SYSTEM = 7'b1110011;
-
-    // ALU operations
-    localparam logic [3:0] ALU_ADD  = 4'h0,
-                           ALU_SUB  = 4'h1,
-                           ALU_SLL  = 4'h2,
-                           ALU_SLT  = 4'h3,
-                           ALU_SLTU = 4'h4,
-                           ALU_XOR  = 4'h5,
-                           ALU_SRL  = 4'h6,
-                           ALU_SRA  = 4'h7,
-                           ALU_OR   = 4'h8,
-                           ALU_AND  = 4'h9;
+    localparam logic [6:0] OP_LUI      = 7'b0110111,
+                           OP_AUIPC    = 7'b0010111,
+                           OP_JAL      = 7'b1101111,
+                           OP_JALR     = 7'b1100111,
+                           OP_BRANCH   = 7'b1100011,
+                           OP_LOAD     = 7'b0000011,
+                           OP_STORE    = 7'b0100011,
+                           OP_IMM      = 7'b0010011,
+                           OP_REG      = 7'b0110011,
+                           OP_MISC_MEM = 7'b0001111,
+                           OP_SYSTEM   = 7'b1110011;
 
     // Extract fields
     logic [6:0] opcode;
@@ -104,6 +104,13 @@ module kv32_decoder (
         illegal      = 1'b0;
         lui          = 1'b0;
         auipc        = 1'b0;
+        csr_op       = CSR_OP_NONE;
+        csr_wen      = 1'b0;
+        is_csr       = 1'b0;
+        is_mret      = 1'b0;
+        use_zimm     = 1'b0;
+        is_ecall     = 1'b0;
+        is_ebreak    = 1'b0;
 
         unique case (opcode)
             OP_LUI: begin
@@ -244,9 +251,63 @@ module kv32_decoder (
                 endcase
             end
 
+            OP_MISC_MEM: begin
+                // FENCE: treated as NOP in this in-order pipeline
+                // No reordering possible, so nothing to enforce.
+            end
+
             OP_SYSTEM: begin
-                // CSR instructions handled separately
-                reg_write = 1'b1;
+                unique case (funct3)
+                    3'b001: begin // CSRRW
+                        csr_op    = CSR_OP_WRITE;
+                        csr_wen   = 1'b1;
+                        is_csr    = 1'b1;
+                        reg_write = 1'b1;
+                    end
+                    3'b010: begin // CSRRS
+                        csr_op    = CSR_OP_SET;
+                        csr_wen   = (rs1 != 5'h0);
+                        is_csr    = 1'b1;
+                        reg_write = 1'b1;
+                    end
+                    3'b011: begin // CSRRC
+                        csr_op    = CSR_OP_CLEAR;
+                        csr_wen   = (rs1 != 5'h0);
+                        is_csr    = 1'b1;
+                        reg_write = 1'b1;
+                    end
+                    3'b101: begin // CSRRWI
+                        csr_op    = CSR_OP_WRITE;
+                        csr_wen   = 1'b1;
+                        is_csr    = 1'b1;
+                        use_zimm  = 1'b1;
+                        reg_write = 1'b1;
+                    end
+                    3'b110: begin // CSRRSI
+                        csr_op    = CSR_OP_SET;
+                        csr_wen   = (instr[19:15] != 5'h0);
+                        is_csr    = 1'b1;
+                        use_zimm  = 1'b1;
+                        reg_write = 1'b1;
+                    end
+                    3'b111: begin // CSRRCI
+                        csr_op    = CSR_OP_CLEAR;
+                        csr_wen   = (instr[19:15] != 5'h0);
+                        is_csr    = 1'b1;
+                        use_zimm  = 1'b1;
+                        reg_write = 1'b1;
+                    end
+                    3'b000: begin
+                        // System instructions (ECALL/EBREAK/MRET)
+                        unique case (instr[31:20])
+                            12'h000: is_ecall  = 1'b1;
+                            12'h001: is_ebreak = 1'b1;
+                            12'h302: is_mret   = 1'b1;
+                            default: illegal    = 1'b1;
+                        endcase
+                    end
+                    default: illegal = 1'b1;
+                endcase
             end
 
             default: begin

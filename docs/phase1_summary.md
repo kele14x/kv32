@@ -95,7 +95,7 @@ kv32/
 - Phase 2: M extension (multiplier, divider)
 - Phase 3: C extension (16-bit instruction decompressor)
 - Phase 4: A extension (LR/SC, AMO)
-- Phase 5: Privilege (M/S/U modes, trap delegation)
+- Phase 5: Full privilege mode system (M/S/U mode switching, trap delegation, medeleg/mideleg, sret/mret) — Note: basic M-mode CSR register file (mstatus, misa, mie, mtvec, mscratch, mepc, mcause, mtval, mip, mstatush, mcycle/h, minstret/h, mcounteren) is a Phase 1 target
 - Phase 6: MMU (Sv32 page table walker, TLB)
 - Phase 7: F/D extension (FPU)
 
