@@ -53,8 +53,8 @@ iverilog-subword: $(RTL_SOURCES) $(TB_DIR)/kv32_subword_tb.sv
 # ---- riscv-tests ----
 
 RISCV_GCC     ?= riscv64-elf-gcc
-RISCV_TESTS_DIR ?= /home/kele/riscv-tests
-RISCV_TESTS_BUILD := $(RISCV_TESTS_DIR)/isa
+RISCV_TESTS_DIR ?= tests/riscv-tests
+RISCV_TESTS_BUILD := build/riscv-tests
 RISCV_MARCH   := rv32i_zicsr
 RISCV_MABI    := ilp32
 RISCV_CFLAGS  := -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartfiles
@@ -63,9 +63,9 @@ RISCV_LDFLAGS := -T$(RISCV_TESTS_DIR)/env/p/link.ld
 
 # Compile all rv32ui tests
 riscv-tests-compile:
-	@if [ ! -d $(RISCV_TESTS_DIR)/.git ]; then \
-		echo "Error: riscv-tests not found at $(RISCV_TESTS_DIR)"; \
-		echo "Run: cd /home/kele && git clone https://github.com/riscv-software-src/riscv-tests && cd riscv-tests && git submodule update --init --recursive"; \
+	@if [ ! -e $(RISCV_TESTS_DIR)/.git ]; then \
+		echo "Error: riscv-tests submodule not initialized at $(RISCV_TESTS_DIR)"; \
+		echo "Run: git submodule update --init --recursive"; \
 		exit 1; \
 	fi
 	@mkdir -p $(RISCV_TESTS_BUILD)

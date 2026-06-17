@@ -1,12 +1,15 @@
 # Build artifacts
 obj_dir/
+build/
 *.vvp
 *.vcd
 
-# IDE / tool files
+# Editor
 *.swp
 *~
 .DS_Store
 
-# Qoder internal
+# IDE / tools
+.claude/
 .qoder/
+.vscode/

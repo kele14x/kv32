@@ -12,7 +12,7 @@
 
 Five-stage in-order pipeline:
 
-```
+```text
 IF → ID → EX → MEM → WB
 ```
 
@@ -63,18 +63,18 @@ Linux requires M, S, and U modes.
 
 ### 3.1 Machine-Mode CSRs (mandatory)
 
-| Address | Name       | Purpose                                    |
-|---------|------------|--------------------------------------------|
-| 0x300   | `mstatus`  | Machine status (MIE, MPIE, MPP, SIE, SPIE, SPP, MPRV, SUM, MXR, FS, etc.) |
-| 0x301   | `misa`     | ISA description (read-only: MXL=1, IMAFDCSU bits) |
-| 0x304   | `mie`      | Machine interrupt enable                   |
-| 0x305   | `mtvec`    | Machine trap vector base + mode (direct/vectored) |
-| 0x340   | `mscratch` | Scratch for M-mode trap handler            |
-| 0x341   | `mepc`     | Machine exception PC                       |
-| 0x342   | `mcause`   | Machine trap cause (interrupt + exception code) |
-| 0x343   | `mtval`    | Machine trap value (bad addr / instruction) |
-| 0x344   | `mip`      | Machine interrupt pending                  |
-| 0x310   | `mstatush` | (RV32 only) high-half of mstatus — MBIGENDIAN, SBE, MBE |
+| Address | Name       | Purpose                                                                          |
+| ------- | ---------- | -------------------------------------------------------------------------------- |
+| 0x300   | `mstatus`  | Machine status (MIE, MPIE, MPP, SIE, SPIE, SPP, MPRV, SUM, MXR, FS, etc.)        |
+| 0x301   | `misa`     | ISA description (read-only: MXL=1, IMAFDCSU bits)                                |
+| 0x304   | `mie`      | Machine interrupt enable                                                         |
+| 0x305   | `mtvec`    | Machine trap vector base + mode (direct/vectored)                                |
+| 0x340   | `mscratch` | Scratch for M-mode trap handler                                                  |
+| 0x341   | `mepc`     | Machine exception PC                                                             |
+| 0x342   | `mcause`   | Machine trap cause (interrupt + exception code)                                  |
+| 0x343   | `mtval`    | Machine trap value (bad addr / instruction)                                      |
+| 0x344   | `mip`      | Machine interrupt pending                                                        |
+| 0x310   | `mstatush` | (RV32 only) high-half of mstatus — MBIGENDIAN, SBE, MBE                          |
 
 Counters:
 
@@ -89,30 +89,30 @@ Counters:
 
 ### 3.2 Supervisor-Mode CSRs
 
-| Address | Name       | Purpose                                    |
-|---------|------------|--------------------------------------------|
-| 0x100   | `sstatus`  | Supervisor status (view of mstatus subset) |
-| 0x104   | `sie`      | Supervisor interrupt enable (view of mie)  |
-| 0x105   | `stvec`    | Supervisor trap vector                     |
-| 0x140   | `sscratch` | Scratch for S-mode trap handler            |
-| 0x141   | `sepc`     | Supervisor exception PC                    |
-| 0x142   | `scause`   | Supervisor trap cause                      |
-| 0x143   | `stval`    | Supervisor trap value                      |
-| 0x144   | `sip`      | Supervisor interrupt pending (view of mip) |
+| Address | Name       | Purpose                                                                |
+| ------- | ---------- | ---------------------------------------------------------------------- |
+| 0x100   | `sstatus`  | Supervisor status (view of mstatus subset)                             |
+| 0x104   | `sie`      | Supervisor interrupt enable (view of mie)                              |
+| 0x105   | `stvec`    | Supervisor trap vector                                                 |
+| 0x140   | `sscratch` | Scratch for S-mode trap handler                                        |
+| 0x141   | `sepc`     | Supervisor exception PC                                                |
+| 0x142   | `scause`   | Supervisor trap cause                                                  |
+| 0x143   | `stval`    | Supervisor trap value                                                  |
+| 0x144   | `sip`      | Supervisor interrupt pending (view of mip)                             |
 | 0x180   | `satp`     | Supervisor address translation and protection (Sv32 mode + PPN + ASID) |
 
 `scounteren` (0x106): controls U-mode counter access.
 
 ### 3.3 User-Mode CSRs (counters only)
 
-| Address | Name       | Purpose                          |
-|---------|------------|----------------------------------|
-| 0xC00   | `cycle`    | Read-only shadow of `mcycle`     |
-| 0xC80   | `cycleh`   | High half                        |
+| Address | Name       | Purpose                                                                          |
+|---------|------------|--------------------------------------------------------------------------------- |
+| 0xC00   | `cycle`    | Read-only shadow of `mcycle`                                                     |
+| 0xC80   | `cycleh`   | High half                                                                        |
 | 0xC01   | `time`     | Wall-clock time — **emulated by M-mode firmware** (reads CLINT `mtime` over AXI) |
-| 0xC81   | `timeh`    | High half (emulated)             |
-| 0xC02   | `instret`  | Read-only shadow of `minstret`   |
-| 0xC82   | `instreth` | High half                        |
+| 0xC81   | `timeh`    | High half (emulated)                                                             |
+| 0xC02   | `instret`  | Read-only shadow of `minstret`                                                   |
+| 0xC82   | `instreth` | High half                                                                        |
 
 **`time` CSR**: The CPU core does **not** implement `time`/`timeh` in hardware.
 Reads to addresses 0xC01 / 0xC81 raise an illegal-instruction trap; M-mode
@@ -141,31 +141,31 @@ this interface into a standard AXI4 master port for SoC-level integration (§4.7
 
 ### 4.1 Signal list
 
-**Request signals** (master → slave, held stable until `gnt`):
+**Request signals** (master -> slave, held stable until `gnt`):
 
-| Signal | Width | Purpose |
-|--------|-------|---------|
-| `mem_req` | 1 | Master has a transaction pending |
-| `mem_addr` | 32 | Byte-aligned address |
-| `mem_we` | 1 | 0 = read, 1 = write |
-| `mem_size` | 2 | `00` = byte, `01` = half, `10` = word (informational) |
-| `mem_wdata` | 32 | Write data, right-aligned per `mem_size` |
-| `mem_be` | 4 | Byte enable strobes — **authoritative** for write granularity |
-| `mem_excl` | 1 | Exclusive access hint (LR/SC, Phase 4; tied to 0 in Phases 1–3) |
+| Signal       | Width | Purpose                                                                          |
+| ------------ | ----- | -------------------------------------------------------------------------------- |
+| `mem_req`    | 1     | Master has a transaction pending                                                 |
+| `mem_addr`   | 32    | Byte-aligned address                                                             |
+| `mem_we`     | 1     | 0 = read, 1 = write                                                              |
+| `mem_size`   | 2     | `00` = byte, `01` = half, `10` = word (informational)                            |
+| `mem_wdata`  | 32    | Write data, right-aligned per `mem_size`                                         |
+| `mem_be`     | 4     | Byte enable strobes -- **authoritative** for write granularity                   |
+| `mem_excl`   | 1     | Exclusive access hint (LR/SC, Phase 4; tied to 0 in Phases 1-3)                  |
 
-**Handshake signal** (slave → master, request acceptance):
+**Handshake signal** (slave -> master, request acceptance):
 
-| Signal | Width | Purpose |
-|--------|-------|---------|
-| `mem_gnt` | 1 | Slave accepts the request this cycle |
+| Signal      | Width | Purpose                                  |
+| ----------- | ----- | ---------------------------------------- |
+| `mem_gnt`   | 1     | Slave accepts the request this cycle     |
 
-**Response signals** (slave → master, 0+ cycles after `gnt`):
+**Response signals** (slave -> master, 0+ cycles after `gnt`):
 
-| Signal | Width | Purpose |
-|--------|-------|---------|
-| `mem_valid` | 1 | Response is valid this cycle |
-| `mem_rdata` | 32 | Read data (undefined on writes or when `valid=0`) |
-| `mem_err` | 1 | Transaction failed — raises load/store access-fault exception |
+| Signal      | Width | Purpose                                                                          |
+| ----------- | ----- | -------------------------------------------------------------------------------- |
+| `mem_valid` | 1     | Response is valid this cycle                                                     |
+| `mem_rdata` | 32    | Read data (undefined on writes or when `valid=0`)                                |
+| `mem_err`   | 1     | Transaction failed -- raises load/store access-fault exception                   |
 
 ### 4.2 Protocol rules
 
@@ -196,6 +196,7 @@ this interface into a standard AXI4 master port for SoC-level integration (§4.7
 ### 4.3 Alignment invariant
 
 **Rule**: `mem_addr` must be aligned to `mem_size`:
+
 - `mem_size = 00` (byte): any address is valid
 - `mem_size = 01` (half): `mem_addr[0] == 0`
 - `mem_size = 10` (word): `mem_addr[1:0] == 00`
@@ -219,6 +220,7 @@ The pipeline uses **two internal memory ports** (Harvard-like structure):
 An **internal arbiter** merges these into a single external memory interface:
 
 **Arbiter priority**:
+
 1. Data port (d-port) — lower latency, on the critical path of load-use
 2. Page-table walk (MMU, triggered from d-port) — must complete before MEM can proceed
 3. Instruction port (i-port) — stall is cheap (single-cycle bubble)
@@ -283,13 +285,13 @@ simple memory interface contract while exposing AXI4 to the SoC's interconnect.
 
 **AXI4 signals** (master):
 
-| Channel | Signals                                                |
-|---------|--------------------------------------------------------|
-| AW      | `awaddr[31:0]`, `awlen[7:0]`, `awsize[2:0]`, `awburst[1:0]`, `awvalid`, `awready` |
-| W       | `wdata[31:0]`, `wstrb[3:0]`, `wlast`, `wvalid`, `wready` |
-| B       | `bresp[1:0]`, `bvalid`, `bready`                       |
-| AR      | `araddr[31:0]`, `arlen[7:0]`, `arsize[2:0]`, `arburst[1:0]`, `arvalid`, `arready` |
-| R       | `rdata[31:0]`, `rresp[1:0]`, `rlast`, `rvalid`, `rready` |
+| Channel | Signals                                                                                     |
+| ------- | ------------------------------------------------------------------------------------------- |
+| AW      | `awaddr[31:0]`, `awlen[7:0]`, `awsize[2:0]`, `awburst[1:0]`, `awvalid`, `awready`           |
+| W       | `wdata[31:0]`, `wstrb[3:0]`, `wlast`, `wvalid`, `wready`                                    |
+| B       | `bresp[1:0]`, `bvalid`, `bready`                                                            |
+| AR      | `araddr[31:0]`, `arlen[7:0]`, `arsize[2:0]`, `arburst[1:0]`, `arvalid`, `arready`           |
+| R       | `rdata[31:0]`, `rresp[1:0]`, `rlast`, `rvalid`, `rready`                                    |
 
 - **Bursts**: INCR only. Single-beat (`len=0`) for uncached / MMIO; up to 16-beat
   bursts for cache-line fill / write-back if a cache is added later.
@@ -308,13 +310,13 @@ simple memory interface contract while exposing AXI4 to the SoC's interconnect.
 
 Memory-mapped at 0x0200_0000. Per-hart:
 
-| Offset    | Access | Name       | Purpose                            |
-|-----------|--------|------------|------------------------------------|
-| 0x0000    | R/W    | `msip`     | Machine software interrupt pending |
-| 0x4000    | R/W    | `mtimecmp` (low)  | Timer compare low 32 bits   |
-| 0x4004    | R/W    | `mtimecmp` (high) | Timer compare high 32 bits  |
-| 0xBFF8    | R      | `mtime` (low)     | Free-running timer low 32   |
-| 0xBFFC    | R      | `mtime` (high)    | Free-running timer high 32  |
+| Offset | Access | Name              | Purpose                            |
+| ------ | ------ | ----------------- | ---------------------------------- |
+| 0x0000 | R/W    | `msip`            | Machine software interrupt pending |
+| 0x4000 | R/W    | `mtimecmp` (low)  | Timer compare low 32 bits          |
+| 0x4004 | R/W    | `mtimecmp` (high) | Timer compare high 32 bits         |
+| 0xBFF8 | R      | `mtime` (low)     | Free-running timer low 32          |
+| 0xBFFC | R      | `mtime` (high)    | Free-running timer high 32         |
 
 - `mtime`: free-running 64-bit counter, increments at `rtc_clock` (e.g., 10 MHz).
 - Timer interrupt (`MTI`) pending when `mtime >= mtimecmp`.
@@ -368,28 +370,29 @@ they are derived inside the CPU by delegation through `mideleg` (see §7.1.1).
 `mip` bits: `SSIP`(1), `SSIE`(1), `STIP`(5), `STIE`(5), `SEIP`(9), `SEIE`(9), `MSIP`(3), `MTIP`(7), `MEIP`(11).
 
 Interrupt taken when:
+
 1. Corresponding `mip` and `mie` bits set
 2. Global enable for the target mode (`mstatus.MIE` for M-mode traps, `mstatus.SIE` for S-mode traps while in S/U)
 3. Delegation: if the interrupt's mode ≤ current privilege and `mideleg` delegates it to S, trap to S; else trap to M.
 
 ### 7.2 Exceptions (synchronous)
 
-| Cause | Name                        | Trap value                |
-|-------|-----------------------------|---------------------------|
-| 0     | Instruction address misaligned | Faulting PC            |
-| 1     | Instruction access fault    | Faulting PC               |
-| 2     | Illegal instruction         | Faulting instruction word |
-| 3     | Breakpoint (ebreak)         | PC                        |
-| 4     | Load address misaligned     | Faulting address          |
-| 5     | Load access fault           | Faulting address          |
-| 6     | Store/AMO address misaligned| Faulting address          |
-| 7     | Store/AMO access fault      | Faulting address          |
-| 8     | Environment call from U     | PC                        |
-| 9     | Environment call from S     | PC                        |
-| 11    | Environment call from M     | PC                        |
-| 12    | Instruction page fault      | Faulting virtual address  |
-| 13    | Load page fault             | Faulting virtual address  |
-| 15    | Store/AMO page fault        | Faulting virtual address  |
+| Cause | Name                           | Trap value                |
+| ----- | ------------------------------ | ------------------------- |
+| 0     | Instruction address misaligned | Faulting PC               |
+| 1     | Instruction access fault       | Faulting PC               |
+| 2     | Illegal instruction            | Faulting instruction word |
+| 3     | Breakpoint (ebreak)            | PC                        |
+| 4     | Load address misaligned        | Faulting address          |
+| 5     | Load access fault              | Faulting address          |
+| 6     | Store/AMO address misaligned   | Faulting address          |
+| 7     | Store/AMO access fault         | Faulting address          |
+| 8     | Environment call from U        | PC                        |
+| 9     | Environment call from S        | PC                        |
+| 11    | Environment call from M        | PC                        |
+| 12    | Instruction page fault         | Faulting virtual address  |
+| 13    | Load page fault                | Faulting virtual address  |
+| 15    | Store/AMO page fault           | Faulting virtual address  |
 
 **Misaligned access**: Linux expects misaligned loads/stores to work. Implement in hardware via multiple aligned accesses (simpler to verify) or trap-and-emulate in M-mode firmware.
 
@@ -398,6 +401,7 @@ Interrupt taken when:
 ### 7.3 Trap vector modes
 
 `mtvec` / `stvec` MODE field:
+
 - 0 (Direct): all traps jump to BASE
 - 1 (Vectored): asynchronous interrupts jump to BASE + 4×cause; exceptions still to BASE
 
@@ -412,7 +416,7 @@ Linux typically uses vectored mode.
 - Two-level page table: 10-bit VPN[1] + 10-bit VPN[0] + 12-bit offset
 - PTE is 32 bits:
 
-```
+```text
  31        20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
 +-----------+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 | PPN[1]    |PPN[0]   |RSW| D | A | G | U | X | W | R | V |
@@ -426,7 +430,7 @@ Linux typically uses vectored mode.
 
 ### 8.2 `satp` CSR format (Sv32)
 
-```
+```text
  31    30        21 20                         0
 +-------+----------+---------------------------+
 | MODE  |   ASID   |           PPN             |
@@ -459,6 +463,7 @@ MODE=0: Bare (no translation); MODE=1: Sv32.
 ### 9.1 Zifencei — `fence.i`
 
 Synchronize instruction and data streams. Implementation options:
+
 - No I-cache: `fence.i` is a NOP (correct, since data writes go directly to memory).
 - With I-cache: flush/invalidate the I-cache pipeline and refetch.
 
@@ -467,6 +472,7 @@ Synchronize instruction and data streams. Implementation options:
 ### 9.2 A extension — Atomic instructions
 
 LR.W / SC.W and AMO* (SWAP, ADD, AND, OR, XOR, MAX, MIN, MAXU, MINU).
+
 - Reservation register: one per hart; stores {valid, address}
 - SC.W succeeds only if reservation is valid and address matches; clears reservation on either outcome
 - AMO* are read-modify-write, serialized on the bus
@@ -521,12 +527,12 @@ OpenSBI once the core is stable.
 > sees them only as memory-mapped addresses and (for interrupt sources) as
 > external input pins. CLINT and boot ROM are integrated inside the core (§4.4).
 
-| Device                  | Purpose                              | Notes                    |
-|-------------------------|--------------------------------------|--------------------------|
-| Main RAM                | Kernel + initramfs + page frames     | At 0x8000_0000; DDR/SRAM/HyperRAM — CPU-agnostic |
-| PLIC                    | External interrupt routing           | See §6                   |
-| Minimal 8250 UART       | Console (early printk + shell)       | See §11.1                |
-| Block device (optional) | Root filesystem if no initramfs      | VirtIO-blk over MMIO, or simple SPI SD |
+| Device                  | Purpose                          | Notes                                             |
+| ----------------------- | -------------------------------- | ------------------------------------------------- |
+| Main RAM                | Kernel + initramfs + page frames | At 0x8000_0000; DDR/SRAM/HyperRAM — CPU-agnostic  |
+| PLIC                    | External interrupt routing       | See §6                                            |
+| Minimal 8250 UART       | Console (early printk + shell)   | See §11.1                                         |
+| Block device (optional) | Root filesystem if no initramfs  | VirtIO-blk over MMIO, or simple SPI SD            |
 
 With initramfs baked into the kernel image, a block device is not required for boot.
 
@@ -542,15 +548,15 @@ plain 8250. This is enough for `printk()` and an interactive shell.
 
 Implemented registers:
 
-| Offset | R/W | Name  | Purpose                                          |
-|--------|-----|-------|--------------------------------------------------|
-| 0x00   | R   | RBR   | Receive Buffer Register (read incoming byte)     |
-| 0x00   | W   | THR   | Transmit Holding Register (write byte to send)   |
-| 0x04   | R/W | IER   | Interrupt Enable (bits 0–3: RDA, THRE, RLS, MS) |
-| 0x08   | R   | IIR   | Interrupt ID (identifies pending interrupt)      |
-| 0x0C   | R/W | LCR   | Line Control (data bits, stop bits, parity, DLAB)|
-| 0x14   | R   | LSR   | Line Status (DR, OE, PE, FE, BI, THRE, TEMT)     |
-| 0x1C   | R/W | SCR   | Scratch                                          |
+| Offset | R/W | Name | Purpose                                           |
+| ------ | --- | ---- | ------------------------------------------------- |
+| 0x00   | R   | RBR  | Receive Buffer Register (read incoming byte)      |
+| 0x00   | W   | THR  | Transmit Holding Register (write byte to send)    |
+| 0x04   | R/W | IER  | Interrupt Enable (bits 0–3: RDA, THRE, RLS, MS)   |
+| 0x08   | R   | IIR  | Interrupt ID (identifies pending interrupt)       |
+| 0x0C   | R/W | LCR  | Line Control (data bits, stop bits, parity, DLAB) |
+| 0x14   | R   | LSR  | Line Status (DR, OE, PE, FE, BI, THRE, TEMT)      |
+| 0x1C   | R/W | SCR  | Scratch                                           |
 
 **Not implemented** (reads return 0, writes ignored):
 
