@@ -9,16 +9,16 @@ module kv32_alu
 
     always_comb begin
         unique case (op)
-            ALU_ADD:  result = a + b;
-            ALU_SUB:  result = a - b;
-            ALU_SLL:  result = a << b[4:0];
-            ALU_SLT:  result = {31'h0, $signed(a) < $signed(b)};
-            ALU_SLTU: result = {31'h0, a < b};
-            ALU_XOR:  result = a ^ b;
-            ALU_SRL:  result = a >> b[4:0];
-            ALU_SRA:  result = $signed(a) >>> b[4:0];
-            ALU_OR:   result = a | b;
-            ALU_AND:  result = a & b;
+            AluAdd:  result = a + b;
+            AluSub:  result = a - b;
+            AluSll:  result = a << b[4:0];
+            AluSlt:  result = {31'h0, $signed(a) < $signed(b)};
+            AluSltu: result = {31'h0, a < b};
+            AluXor:  result = a ^ b;
+            AluSrl:  result = a >> b[4:0];
+            AluSra:  result = $signed(a) >>> b[4:0];
+            AluOr:   result = a | b;
+            AluAnd:  result = a & b;
             default:  result = 32'h0;
         endcase
     end

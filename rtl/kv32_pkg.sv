@@ -15,16 +15,16 @@ typedef struct packed {
 } mem_resp_t;
 
 // ALU operation encoding
-localparam logic [3:0] ALU_ADD  = 4'h0,
-                       ALU_SUB  = 4'h1,
-                       ALU_SLL  = 4'h2,
-                       ALU_SLT  = 4'h3,
-                       ALU_SLTU = 4'h4,
-                       ALU_XOR  = 4'h5,
-                       ALU_SRL  = 4'h6,
-                       ALU_SRA  = 4'h7,
-                       ALU_OR   = 4'h8,
-                       ALU_AND  = 4'h9;
+localparam logic [3:0] AluAdd  = 4'h0,
+                       AluSub  = 4'h1,
+                       AluSll  = 4'h2,
+                       AluSlt  = 4'h3,
+                       AluSltu = 4'h4,
+                       AluXor  = 4'h5,
+                       AluSrl  = 4'h6,
+                       AluSra  = 4'h7,
+                       AluOr   = 4'h8,
+                       AluAnd  = 4'h9;
 
 // CSR operation encoding
 typedef enum logic [1:0] {

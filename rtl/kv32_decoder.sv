@@ -35,17 +35,17 @@ module kv32_decoder
 );
 
     // RV32I opcodes
-    localparam logic [6:0] OP_LUI      = 7'b0110111,
-                           OP_AUIPC    = 7'b0010111,
-                           OP_JAL      = 7'b1101111,
-                           OP_JALR     = 7'b1100111,
-                           OP_BRANCH   = 7'b1100011,
-                           OP_LOAD     = 7'b0000011,
-                           OP_STORE    = 7'b0100011,
-                           OP_IMM      = 7'b0010011,
-                           OP_REG      = 7'b0110011,
-                           OP_MISC_MEM = 7'b0001111,
-                           OP_SYSTEM   = 7'b1110011;
+    localparam logic [6:0] OpLui      = 7'b0110111,
+                           OpAuipc    = 7'b0010111,
+                           OpJal      = 7'b1101111,
+                           OpJalr     = 7'b1100111,
+                           OpBranch   = 7'b1100011,
+                           OpLoad     = 7'b0000011,
+                           OpStore    = 7'b0100011,
+                           OpImm      = 7'b0010011,
+                           OpReg      = 7'b0110011,
+                           OpMiscMem = 7'b0001111,
+                           OpSystem   = 7'b1110011;
 
     // Extract fields
     logic [6:0] opcode;
@@ -63,27 +63,27 @@ module kv32_decoder
         imm = 32'h0;
 
         unique case (opcode)
-            OP_LUI, OP_AUIPC: begin
+            OpLui, OpAuipc: begin
                 // U-type
                 imm = {instr[31:12], 12'h0};
             end
 
-            OP_JAL: begin
+            OpJal: begin
                 // J-type
                 imm = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0};
             end
 
-            OP_BRANCH: begin
+            OpBranch: begin
                 // B-type
                 imm = {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1'b0};
             end
 
-            OP_LOAD, OP_JALR, OP_IMM: begin
+            OpLoad, OpJalr, OpImm: begin
                 // I-type
                 imm = {{21{instr[31]}}, instr[30:20]};
             end
 
-            OP_STORE: begin
+            OpStore: begin
                 // S-type
                 imm = {{21{instr[31]}}, instr[30:25], instr[11:7]};
             end
@@ -115,137 +115,156 @@ module kv32_decoder
         is_ebreak    = 1'b0;
 
         unique case (opcode)
-            OP_LUI: begin
+            OpLui: begin
                 reg_write = 1'b1;
                 lui       = 1'b1;
             end
 
-            OP_AUIPC: begin
+            OpAuipc: begin
                 use_imm      = 1'b1;
                 alu_op_valid = 1'b1;
-                alu_op       = ALU_ADD;
+                alu_op       = AluAdd;
                 reg_write    = 1'b1;
                 auipc        = 1'b1;
             end
 
-            OP_JAL: begin
+            OpJal: begin
                 jump      = 1'b1;
                 reg_write = 1'b1;
             end
 
-            OP_JALR: begin
+            OpJalr: begin
                 use_imm  = 1'b1;
                 jump     = 1'b1;
                 is_jalr  = 1'b1;
                 reg_write = 1'b1;
+                // JALR requires funct3=000; any other value is illegal.
+                if (funct3 != 3'b000) illegal = 1'b1;
             end
 
-            OP_BRANCH: begin
+            OpBranch: begin
                 branch = 1'b1;
+                // Valid funct3: BEQ=000, BNE=001, BLT=100, BGE=101,
+                // BLTU=110, BGEU=111. funct3 010/011 are reserved.
+                unique case (funct3)
+                    3'b010, 3'b011: illegal = 1'b1;
+                    default: ; // 000,001,100,101,110,111 valid
+                endcase
             end
 
-            OP_LOAD: begin
+            OpLoad: begin
                 use_imm      = 1'b1;
                 alu_op_valid = 1'b1;
-                alu_op       = ALU_ADD;
+                alu_op       = AluAdd;
                 mem_read     = 1'b1;
                 reg_write    = 1'b1;
+                // Valid funct3: LB=000, LH=001, LW=010, LBU=100, LHU=101.
+                // 011/110/111 are not defined in RV32I.
+                unique case (funct3)
+                    3'b000, 3'b001, 3'b010, 3'b100, 3'b101: ; // valid
+                    default: illegal = 1'b1;
+                endcase
             end
 
-            OP_STORE: begin
+            OpStore: begin
                 use_imm      = 1'b1;
                 alu_op_valid = 1'b1;
-                alu_op       = ALU_ADD;
+                alu_op       = AluAdd;
                 mem_write    = 1'b1;
+                // Valid funct3: SB=000, SH=001, SW=010. Others illegal.
+                unique case (funct3)
+                    3'b000, 3'b001, 3'b010: ; // valid
+                    default: illegal = 1'b1;
+                endcase
             end
 
-            OP_IMM: begin
+            OpImm: begin
                 use_imm      = 1'b1;
                 alu_op_valid = 1'b1;
                 reg_write    = 1'b1;
 
                 unique case (funct3)
-                    3'b000: alu_op = ALU_ADD;  // ADDI
-                    3'b001: alu_op = ALU_SLL;  // SLLI
-                    3'b010: alu_op = ALU_SLT;  // SLTI
-                    3'b011: alu_op = ALU_SLTU; // SLTIU
-                    3'b100: alu_op = ALU_XOR;  // XORI
+                    3'b000: alu_op = AluAdd;  // ADDI
+                    3'b001: alu_op = AluSll;  // SLLI
+                    3'b010: alu_op = AluSlt;  // SLTI
+                    3'b011: alu_op = AluSltu; // SLTIU
+                    3'b100: alu_op = AluXor;  // XORI
                     3'b101: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_SRL;  // SRLI
+                            alu_op = AluSrl;  // SRLI
                         end else if (funct7 == 7'b0100000) begin
-                            alu_op = ALU_SRA;  // SRAI
+                            alu_op = AluSra;  // SRAI
                         end else begin
                             illegal = 1'b1;
                         end
                     end
-                    3'b110: alu_op = ALU_OR;   // ORI
-                    3'b111: alu_op = ALU_AND;  // ANDI
+                    3'b110: alu_op = AluOr;   // ORI
+                    3'b111: alu_op = AluAnd;  // ANDI
                     default: illegal = 1'b1;
                 endcase
             end
 
-            OP_REG: begin
+            OpReg: begin
                 alu_op_valid = 1'b1;
                 reg_write    = 1'b1;
 
                 unique case (funct3)
                     3'b000: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_ADD;  // ADD
+                            alu_op = AluAdd;  // ADD
                         end else if (funct7 == 7'b0100000) begin
-                            alu_op = ALU_SUB;  // SUB
+                            alu_op = AluSub;  // SUB
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b001: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_SLL;  // SLL
+                            alu_op = AluSll;  // SLL
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b010: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_SLT;  // SLT
+                            alu_op = AluSlt;  // SLT
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b011: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_SLTU; // SLTU
+                            alu_op = AluSltu; // SLTU
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b100: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_XOR;  // XOR
+                            alu_op = AluXor;  // XOR
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b101: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_SRL;  // SRL
+                            alu_op = AluSrl;  // SRL
                         end else if (funct7 == 7'b0100000) begin
-                            alu_op = ALU_SRA;  // SRA
+                            alu_op = AluSra;  // SRA
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b110: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_OR;   // OR
+                            alu_op = AluOr;   // OR
                         end else begin
                             illegal = 1'b1;
                         end
                     end
                     3'b111: begin
                         if (funct7 == 7'b0000000) begin
-                            alu_op = ALU_AND;  // AND
+                            alu_op = AluAnd;  // AND
                         end else begin
                             illegal = 1'b1;
                         end
@@ -254,12 +273,19 @@ module kv32_decoder
                 endcase
             end
 
-            OP_MISC_MEM: begin
-                // FENCE: treated as NOP in this in-order pipeline
-                // No reordering possible, so nothing to enforce.
+            OpMiscMem: begin
+                // FENCE (funct3=000) and FENCE.I (funct3=001) are treated as
+                // NOPs in this in-order single-hart pipeline (no separate
+                // I-cache to synchronize against the unified BRAM in
+                // simulation). Any other funct3 is not a valid MISC-MEM
+                // instruction.
+                unique case (funct3)
+                    3'b000, 3'b001: ; // FENCE, FENCE.I — NOP
+                    default: illegal = 1'b1;
+                endcase
             end
 
-            OP_SYSTEM: begin
+            OpSystem: begin
                 unique case (funct3)
                     3'b001: begin // CSRRW
                         csr_op    = CSR_OP_WRITE;

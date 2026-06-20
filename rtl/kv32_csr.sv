@@ -12,6 +12,7 @@ module kv32_csr
     input  logic [31:0] csr_wdata,     // Write data (already computed by pipeline)
     input  logic [1:0]  csr_op,        // 00=none, 01=write(CSRRW), 10=set(CSRRS), 11=clear(CSRRC)
     input  logic        csr_wen,       // Write enable
+    input  logic        is_csr,        // Instruction is a CSR access (gates legality)
     output logic [31:0] csr_rdata,     // Read data (read-before-write)
 
     // External interrupt inputs (from CLINT/PLIC)
@@ -22,7 +23,8 @@ module kv32_csr
     // Trap interface (from pipeline)
     input  logic        trap_taken,    // A trap is being taken this cycle
     // verilator lint_off UNUSEDSIGNAL
-    input  logic [31:0] trap_pc,       // PC of trapping instruction (bit0 unused: always 0 in RISC-V)
+    // PC of trapping instruction (bit0 unused: always 0 in RISC-V)
+    input  logic [31:0] trap_pc,
     // verilator lint_on UNUSEDSIGNAL
     input  logic [31:0] trap_cause,    // mcause value
     input  logic [31:0] trap_val,      // mtval value
@@ -34,6 +36,7 @@ module kv32_csr
     output logic [31:0] mtvec_out,     // For trap vector calculation
     output logic [31:0] mepc_out,      // For MRET return address
     output logic        mstatus_mie,   // Global M-mode interrupt enable
+    output logic        csr_illegal,   // CSR access is illegal (raises trap)
 
     // Retired instruction signal
     input  logic        instr_retired
@@ -42,26 +45,26 @@ module kv32_csr
     // -------------------------------------------------------------------------
     // CSR address constants
     // -------------------------------------------------------------------------
-    localparam logic [11:0] CSR_MSTATUS    = 12'h300;
-    localparam logic [11:0] CSR_MISA       = 12'h301;
-    localparam logic [11:0] CSR_MIE        = 12'h304;
-    localparam logic [11:0] CSR_MTVEC      = 12'h305;
-    localparam logic [11:0] CSR_MCOUNTEREN = 12'h306;
-    localparam logic [11:0] CSR_MSTATUSH   = 12'h310;
-    localparam logic [11:0] CSR_MSCRATCH   = 12'h340;
-    localparam logic [11:0] CSR_MEPC       = 12'h341;
-    localparam logic [11:0] CSR_MCAUSE     = 12'h342;
-    localparam logic [11:0] CSR_MTVAL      = 12'h343;
-    localparam logic [11:0] CSR_MIP        = 12'h344;
-    localparam logic [11:0] CSR_MVENDORID  = 12'hF11;
-    localparam logic [11:0] CSR_MARCHID    = 12'hF12;
-    localparam logic [11:0] CSR_MIMPID     = 12'hF13;
-    localparam logic [11:0] CSR_MHARTID    = 12'hF14;
-    localparam logic [11:0] CSR_MCONFIGPTR = 12'hF15;
-    localparam logic [11:0] CSR_MCYCLE     = 12'hB00;
-    localparam logic [11:0] CSR_MINSTRET   = 12'hB02;
-    localparam logic [11:0] CSR_MCYCLEH    = 12'hB80;
-    localparam logic [11:0] CSR_MINSTRETH  = 12'hB82;
+    localparam logic [11:0] CsrMstatus    = 12'h300;
+    localparam logic [11:0] CsrMisa       = 12'h301;
+    localparam logic [11:0] CsrMie        = 12'h304;
+    localparam logic [11:0] CsrMtvec      = 12'h305;
+    localparam logic [11:0] CsrMcounteren = 12'h306;
+    localparam logic [11:0] CsrMstatush   = 12'h310;
+    localparam logic [11:0] CsrMscratch   = 12'h340;
+    localparam logic [11:0] CsrMepc       = 12'h341;
+    localparam logic [11:0] CsrMcause     = 12'h342;
+    localparam logic [11:0] CsrMtval      = 12'h343;
+    localparam logic [11:0] CsrMip        = 12'h344;
+    localparam logic [11:0] CsrMvendorid  = 12'hF11;
+    localparam logic [11:0] CsrMarchid    = 12'hF12;
+    localparam logic [11:0] CsrMimpid     = 12'hF13;
+    localparam logic [11:0] CsrMhartid    = 12'hF14;
+    localparam logic [11:0] CsrMconfigptr = 12'hF15;
+    localparam logic [11:0] CsrMcycle     = 12'hB00;
+    localparam logic [11:0] CsrMinstret   = 12'hB02;
+    localparam logic [11:0] CsrMcycleh    = 12'hB80;
+    localparam logic [11:0] CsrMinstreth  = 12'hB82;
 
     // -------------------------------------------------------------------------
     // misa fixed value: MXL=01 (32-bit).
@@ -69,7 +72,7 @@ module kv32_csr
     // Extensions bitmap (bits [25:0]): A=0, C=2, D=3, F=5, I=8, M=12, S=18, U=20.
     // Update this value as each extension lands.
     // -------------------------------------------------------------------------
-    localparam logic [31:0] MISA_VAL = {2'b01, 4'b0000, 26'b00_0000_0000_0000_0001_0000_0000};
+    localparam logic [31:0] MisaVal = {2'b01, 4'b0000, 26'b00_0000_0000_0000_0001_0000_0000};
 
     // -------------------------------------------------------------------------
     // CSR storage registers
@@ -123,31 +126,60 @@ module kv32_csr
     };
 
     // -------------------------------------------------------------------------
+    // CSR legality check (combinational)
+    // An access is illegal if:
+    //   - the CSR address is not implemented, OR
+    //   - the CSR is read-only and a write is attempted.
+    // Read-only CSRs are those with addr[11:10]==2'b11 (mvendorid/marchid/
+    // mimpid/mhartid/mconfigptr here). Writes to them raise illegal
+    // instruction. CSRRS/CSRRC with rs1=x0 suppress csr_wen in the decoder,
+    // so a read of a read-only CSR is legal. Unimplemented CSRs trap on
+    // any access (read or write) — software is expected to use the
+    // trap-and-skip pattern (set mtvec to the next insn before probing).
+    // -------------------------------------------------------------------------
+    always_comb begin
+        if (!is_csr) begin
+            csr_illegal = 1'b0;          // not a CSR instruction
+        end else begin
+            unique case (csr_addr)
+                CsrMstatus, CsrMisa, CsrMie, CsrMtvec, CsrMcounteren, CsrMstatush,
+                CsrMscratch, CsrMepc, CsrMcause, CsrMtval, CsrMip,
+                CsrMcycle, CsrMcycleh, CsrMinstret, CsrMinstreth:
+                    csr_illegal = 1'b0;          // implemented, read-write
+                CsrMvendorid, CsrMarchid, CsrMimpid, CsrMhartid, CsrMconfigptr:
+                    csr_illegal = csr_wen;       // read-only: write is illegal
+                default:
+                    csr_illegal = 1'b1;          // unimplemented: any access illegal
+            endcase
+        end
+    end
+
+    // -------------------------------------------------------------------------
     // CSR read (combinational, read-before-write)
     // -------------------------------------------------------------------------
     always_comb begin
         unique case (csr_addr)
-            CSR_MSTATUS:    csr_rdata = mstatus_rval;
-            CSR_MISA:       csr_rdata = MISA_VAL;
-            CSR_MIE:        csr_rdata = mie_r;
-            CSR_MTVEC:      csr_rdata = mtvec_r;
-            CSR_MCOUNTEREN: csr_rdata = mcounteren_r;
-            CSR_MSTATUSH:   csr_rdata = 32'h0;   // No big-endian support
-            CSR_MSCRATCH:   csr_rdata = mscratch_r;
-            CSR_MEPC:       csr_rdata = mepc_r;
-            CSR_MCAUSE:     csr_rdata = mcause_r;
-            CSR_MTVAL:      csr_rdata = mtval_r;
-            CSR_MIP:        csr_rdata = mip_rval;
+            CsrMstatus:    csr_rdata = mstatus_rval;
+            CsrMisa:       csr_rdata = MisaVal;
+            CsrMie:        csr_rdata = mie_r;
+            CsrMtvec:      csr_rdata = mtvec_r;
+            CsrMcounteren: csr_rdata = mcounteren_r;
+            CsrMstatush:   csr_rdata = 32'h0;   // No big-endian support
+            CsrMscratch:   csr_rdata = mscratch_r;
+            CsrMepc:       csr_rdata = mepc_r;
+            CsrMcause:     csr_rdata = mcause_r;
+            CsrMtval:      csr_rdata = mtval_r;
+            CsrMip:        csr_rdata = mip_rval;
             // Identity CSRs — read-only, return 0 for this soft core
-            CSR_MVENDORID:  csr_rdata = 32'h0;   // No commercial vendor
-            CSR_MARCHID:    csr_rdata = 32'h0;   // No official architecture ID
-            CSR_MIMPID:     csr_rdata = 32'h0;   // No implementation ID
-            CSR_MHARTID:    csr_rdata = 32'h0;   // Single-hart: always hart 0
-            CSR_MCONFIGPTR: csr_rdata = 32'h0;   // No configuration table
-            CSR_MCYCLE:     csr_rdata = mcycle_r[31:0];
-            CSR_MCYCLEH:    csr_rdata = mcycle_r[63:32];
-            CSR_MINSTRET:   csr_rdata = minstret_r[31:0];
-            CSR_MINSTRETH:  csr_rdata = minstret_r[63:32];
+            CsrMvendorid:  csr_rdata = 32'h0;   // No commercial vendor
+            CsrMarchid:    csr_rdata = 32'h0;   // No official architecture ID
+            CsrMimpid:     csr_rdata = 32'h0;   // No implementation ID
+            CsrMhartid:    csr_rdata = 32'h0;   // Single-hart: always hart 0
+            CsrMconfigptr: csr_rdata = 32'h0;   // No configuration table
+            CsrMcycle:     csr_rdata = mcycle_r[31:0];
+            CsrMcycleh:    csr_rdata = mcycle_r[63:32];
+            CsrMinstret:   csr_rdata = minstret_r[31:0];
+            CsrMinstreth:  csr_rdata = minstret_r[63:32];
             default:        csr_rdata = 32'h0;  // Unimplemented CSR returns 0
         endcase
     end
@@ -207,12 +239,12 @@ module kv32_csr
             // considered retired.
             // ------------------------------------------------------------------
             if (!(csr_wen && csr_op != CSR_OP_NONE &&
-                  (csr_addr == CSR_MCYCLE || csr_addr == CSR_MCYCLEH)))
+                  (csr_addr == CsrMcycle || csr_addr == CsrMcycleh)))
                 mcycle_r <= mcycle_r + 64'h1;
 
             if (instr_retired &&
                 !(csr_wen && csr_op != CSR_OP_NONE &&
-                  (csr_addr == CSR_MINSTRET || csr_addr == CSR_MINSTRETH)))
+                  (csr_addr == CsrMinstret || csr_addr == CsrMinstreth)))
                 minstret_r <= minstret_r + 64'h1;
 
             // ------------------------------------------------------------------
@@ -239,43 +271,43 @@ module kv32_csr
             // ------------------------------------------------------------------
             end else if (csr_wen && (csr_op != CSR_OP_NONE)) begin
                 unique case (csr_addr)
-                    CSR_MSTATUS: begin
+                    CsrMstatus: begin
                         mstatus_mie  <= csr_new_val(mstatus_rval, csr_op, csr_wdata)[3];
                         mstatus_mpie <= csr_new_val(mstatus_rval, csr_op, csr_wdata)[7];
                         mstatus_mpp  <= csr_new_val(mstatus_rval, csr_op, csr_wdata)[12:11];
                     end
-                    CSR_MISA: ; // Read-only, ignore write
-                    CSR_MIE:
+                    CsrMisa: ; // Read-only, ignore write
+                    CsrMie:
                         mie_r <= csr_new_val(mie_r, csr_op, csr_wdata);
-                    CSR_MTVEC:
+                    CsrMtvec:
                         // MODE field [1:0] forced to 0 (Direct-only).
                         // Vectored mode (MODE=1) is not yet supported;
                         // implement when async interrupt-taking is added (Phase 5).
                         mtvec_r <= {csr_new_val(mtvec_r, csr_op, csr_wdata)[31:2], 2'b00};
-                    CSR_MCOUNTEREN:
+                    CsrMcounteren:
                         mcounteren_r <= csr_new_val(mcounteren_r, csr_op, csr_wdata);
-                    CSR_MSTATUSH: ; // All zeros, no big-endian — ignore write
-                    CSR_MSCRATCH:
+                    CsrMstatush: ; // All zeros, no big-endian — ignore write
+                    CsrMscratch:
                         mscratch_r <= csr_new_val(mscratch_r, csr_op, csr_wdata);
-                    CSR_MEPC:
+                    CsrMepc:
                         mepc_r <= {csr_new_val(mepc_r, csr_op, csr_wdata)[31:1], 1'b0};
-                    CSR_MCAUSE:
+                    CsrMcause:
                         mcause_r <= csr_new_val(mcause_r, csr_op, csr_wdata);
-                    CSR_MTVAL:
+                    CsrMtval:
                         mtval_r <= csr_new_val(mtval_r, csr_op, csr_wdata);
-                    CSR_MIP: ; // Hardware-driven bits, writes ignored
-                    CSR_MVENDORID: ; // Read-only, ignore write
-                    CSR_MARCHID:   ; // Read-only, ignore write
-                    CSR_MIMPID:    ; // Read-only, ignore write
-                    CSR_MHARTID:   ; // Read-only, ignore write
-                    CSR_MCONFIGPTR: ; // Read-only, ignore write
-                    CSR_MCYCLE:
+                    CsrMip: ; // Hardware-driven bits, writes ignored
+                    CsrMvendorid: ; // Read-only, ignore write
+                    CsrMarchid:   ; // Read-only, ignore write
+                    CsrMimpid:    ; // Read-only, ignore write
+                    CsrMhartid:   ; // Read-only, ignore write
+                    CsrMconfigptr: ; // Read-only, ignore write
+                    CsrMcycle:
                         mcycle_r[31:0] <= csr_new_val(mcycle_r[31:0], csr_op, csr_wdata);
-                    CSR_MCYCLEH:
+                    CsrMcycleh:
                         mcycle_r[63:32] <= csr_new_val(mcycle_r[63:32], csr_op, csr_wdata);
-                    CSR_MINSTRET:
+                    CsrMinstret:
                         minstret_r[31:0] <= csr_new_val(minstret_r[31:0], csr_op, csr_wdata);
-                    CSR_MINSTRETH:
+                    CsrMinstreth:
                         minstret_r[63:32] <= csr_new_val(minstret_r[63:32], csr_op, csr_wdata);
                     default: ; // Unimplemented CSR, ignore write
                 endcase

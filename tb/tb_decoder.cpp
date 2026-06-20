@@ -48,13 +48,13 @@ static uint32_t j_type(int32_t imm, uint8_t rd, uint8_t op) {
 }
 
 // Opcodes
-enum { OP_LUI=0x37, OP_AUIPC=0x17, OP_JAL=0x6F, OP_JALR=0x67, OP_BRANCH=0x63,
-       OP_LOAD=0x03, OP_STORE=0x23, OP_IMM=0x13, OP_REG=0x33,
-       OP_MISC_MEM=0x0F, OP_SYSTEM=0x73 };
+enum { OpLui=0x37, OpAuipc=0x17, OpJal=0x6F, OpJalr=0x67, OpBranch=0x63,
+       OpLoad=0x03, OpStore=0x23, OpImm=0x13, OpReg=0x33,
+       OpMiscMem=0x0F, OpSystem=0x73 };
 
 // ALU op codes (from kv32_pkg)
-enum { ALU_ADD=0, ALU_SUB=1, ALU_SLL=2, ALU_SLT=3, ALU_SLTU=4,
-       ALU_XOR=5, ALU_SRL=6, ALU_SRA=7, ALU_OR=8, ALU_AND=9 };
+enum { AluAdd=0, AluSub=1, AluSll=2, AluSlt=3, AluSltu=4,
+       AluXor=5, AluSrl=6, AluSra=7, AluOr=8, AluAnd=9 };
 
 // CSR op codes
 enum { CSR_NONE=0, CSR_WRITE=1, CSR_SET=2, CSR_CLEAR=3 };
@@ -111,207 +111,207 @@ int main() {
     Vkv32_decoder* d = new Vkv32_decoder;
 
     // ---- LUI ----
-    { uint32_t i = u_type(0x12345000, 5, OP_LUI);
+    { uint32_t i = u_type(0x12345000, 5, OpLui);
       Exp e = fields(i); e.imm=0x12345000; e.reg_write=true; e.lui=true;
       check(d, "LUI", i, e); }
 
     // ---- AUIPC ----
-    { uint32_t i = u_type(0xABCDE000, 6, OP_AUIPC);
+    { uint32_t i = u_type(0xABCDE000, 6, OpAuipc);
       Exp e = fields(i); e.imm=0xABCDE000; e.use_imm=true; e.alu_op_valid=true;
-      e.alu_op=ALU_ADD; e.reg_write=true; e.auipc=true;
+      e.alu_op=AluAdd; e.reg_write=true; e.auipc=true;
       check(d, "AUIPC", i, e); }
 
     // ---- JAL ----
-    { uint32_t i = j_type(0x100, 1, OP_JAL);
+    { uint32_t i = j_type(0x100, 1, OpJal);
       Exp e = fields(i); e.imm=0x100; e.jump=true; e.reg_write=true;
       check(d, "JAL +0x100", i, e); }
 
     // ---- JAL with negative immediate ----
-    { uint32_t i = j_type(-4, 1, OP_JAL);
+    { uint32_t i = j_type(-4, 1, OpJal);
       Exp e = fields(i); e.imm=(uint32_t)(-4); e.jump=true; e.reg_write=true;
       check(d, "JAL -4", i, e); }
 
     // ---- JALR ----
-    { uint32_t i = i_type(4, 2, 0, 1, OP_JALR);
+    { uint32_t i = i_type(4, 2, 0, 1, OpJalr);
       Exp e = fields(i); e.imm=4; e.use_imm=true;
       e.jump=true; e.is_jalr=true; e.reg_write=true;
       check(d, "JALR", i, e); }
 
     // ---- BEQ ----
-    { uint32_t i = b_type(8, 2, 1, 0, OP_BRANCH);
+    { uint32_t i = b_type(8, 2, 1, 0, OpBranch);
       Exp e = fields(i); e.imm=8; e.branch=true;
       check(d, "BEQ +8", i, e); }
 
     // ---- BNE negative offset ----
-    { uint32_t i = b_type(-16, 2, 1, 1, OP_BRANCH);
+    { uint32_t i = b_type(-16, 2, 1, 1, OpBranch);
       Exp e = fields(i); e.imm=(uint32_t)(-16); e.branch=true;
       check(d, "BNE -16", i, e); }
 
     // ---- LW ----
-    { uint32_t i = i_type(16, 4, 2, 3, OP_LOAD);
+    { uint32_t i = i_type(16, 4, 2, 3, OpLoad);
       Exp e = fields(i); e.imm=16; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_ADD; e.mem_read=true; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_read=true; e.reg_write=true;
       check(d, "LW", i, e); }
 
     // ---- LH (funct3=1) ----
-    { uint32_t i = i_type(0, 4, 1, 3, OP_LOAD);
+    { uint32_t i = i_type(0, 4, 1, 3, OpLoad);
       Exp e = fields(i); e.imm=0; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_ADD; e.mem_read=true; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_read=true; e.reg_write=true;
       check(d, "LH", i, e); }
 
     // ---- SW ----
-    { uint32_t i = s_type(8, 2, 3, 2, OP_STORE);
+    { uint32_t i = s_type(8, 2, 3, 2, OpStore);
       Exp e = fields(i); e.imm=8; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_ADD; e.mem_write=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_write=true;
       check(d, "SW", i, e); }
 
     // ---- SB negative offset ----
-    { uint32_t i = s_type(-4, 2, 3, 0, OP_STORE);
+    { uint32_t i = s_type(-4, 2, 3, 0, OpStore);
       Exp e = fields(i); e.imm=(uint32_t)(-4); e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_ADD; e.mem_write=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_write=true;
       check(d, "SB -4", i, e); }
 
     // ---- OP-IMM family ----
-    { uint32_t i = i_type(5, 2, 0, 1, OP_IMM);
+    { uint32_t i = i_type(5, 2, 0, 1, OpImm);
       Exp e = fields(i); e.imm=5; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_ADD; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.reg_write=true;
       check(d, "ADDI", i, e); }
 
-    { uint32_t i = i_type(4, 2, 1, 1, OP_IMM);
+    { uint32_t i = i_type(4, 2, 1, 1, OpImm);
       Exp e = fields(i); e.imm=4; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_SLL; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluSll; e.reg_write=true;
       check(d, "SLLI", i, e); }
 
-    { uint32_t i = i_type(-1, 2, 2, 1, OP_IMM);
+    { uint32_t i = i_type(-1, 2, 2, 1, OpImm);
       Exp e = fields(i); e.imm=(uint32_t)(-1); e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_SLT; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluSlt; e.reg_write=true;
       check(d, "SLTI -1", i, e); }
 
-    { uint32_t i = i_type(1, 2, 3, 1, OP_IMM);
+    { uint32_t i = i_type(1, 2, 3, 1, OpImm);
       Exp e = fields(i); e.imm=1; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_SLTU; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluSltu; e.reg_write=true;
       check(d, "SLTIU", i, e); }
 
-    { uint32_t i = i_type(0xFF, 2, 4, 1, OP_IMM);
+    { uint32_t i = i_type(0xFF, 2, 4, 1, OpImm);
       Exp e = fields(i); e.imm=0xFF; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_XOR; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluXor; e.reg_write=true;
       check(d, "XORI", i, e); }
 
-    { uint32_t i = i_type(4, 2, 5, 1, OP_IMM);
+    { uint32_t i = i_type(4, 2, 5, 1, OpImm);
       Exp e = fields(i); e.imm=4; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_SRL; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluSrl; e.reg_write=true;
       check(d, "SRLI", i, e); }
 
-    { uint32_t i = i_type(0x404, 2, 5, 1, OP_IMM);
+    { uint32_t i = i_type(0x404, 2, 5, 1, OpImm);
       Exp e = fields(i); e.imm=0x404; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_SRA; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluSra; e.reg_write=true;
       check(d, "SRAI", i, e); }  // funct7=0x20
 
-    { uint32_t i = i_type(0xF0, 2, 6, 1, OP_IMM);
+    { uint32_t i = i_type(0xF0, 2, 6, 1, OpImm);
       Exp e = fields(i); e.imm=0xF0; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_OR; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluOr; e.reg_write=true;
       check(d, "ORI", i, e); }
 
-    { uint32_t i = i_type(0xFF, 2, 7, 1, OP_IMM);
+    { uint32_t i = i_type(0xFF, 2, 7, 1, OpImm);
       Exp e = fields(i); e.imm=0xFF; e.use_imm=true;
-      e.alu_op_valid=true; e.alu_op=ALU_AND; e.reg_write=true;
+      e.alu_op_valid=true; e.alu_op=AluAnd; e.reg_write=true;
       check(d, "ANDI", i, e); }
 
     // ---- OP-REG family ----
-    { uint32_t i = r(0, 3, 2, 0, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_ADD; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 0, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.reg_write=true;
       check(d, "ADD", i, e); }
 
-    { uint32_t i = r(0x20, 3, 2, 0, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_SUB; e.reg_write=true;
+    { uint32_t i = r(0x20, 3, 2, 0, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluSub; e.reg_write=true;
       check(d, "SUB", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 1, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_SLL; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 1, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluSll; e.reg_write=true;
       check(d, "SLL", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 2, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_SLT; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 2, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluSlt; e.reg_write=true;
       check(d, "SLT", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 3, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_SLTU; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 3, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluSltu; e.reg_write=true;
       check(d, "SLTU", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 4, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_XOR; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 4, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluXor; e.reg_write=true;
       check(d, "XOR", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 5, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_SRL; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 5, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluSrl; e.reg_write=true;
       check(d, "SRL", i, e); }
 
-    { uint32_t i = r(0x20, 3, 2, 5, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_SRA; e.reg_write=true;
+    { uint32_t i = r(0x20, 3, 2, 5, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluSra; e.reg_write=true;
       check(d, "SRA", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 6, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_OR; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 6, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluOr; e.reg_write=true;
       check(d, "OR", i, e); }
 
-    { uint32_t i = r(0, 3, 2, 7, 1, OP_REG);
-      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=ALU_AND; e.reg_write=true;
+    { uint32_t i = r(0, 3, 2, 7, 1, OpReg);
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAnd; e.reg_write=true;
       check(d, "AND", i, e); }
 
     // ---- FENCE (NOP in this pipeline) ----
     { Exp e; check(d, "FENCE", 0x0000000F, e); }
 
     // ---- CSR instructions ----
-    { uint32_t i = i_type(0x340, 2, 1, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 2, 1, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_WRITE; e.csr_wen=true;
       e.is_csr=true; e.reg_write=true;
       check(d, "CSRRW", i, e); }
 
-    { uint32_t i = i_type(0x340, 2, 2, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 2, 2, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_SET; e.csr_wen=true;
       e.is_csr=true; e.reg_write=true;
       check(d, "CSRRS rs1!=0", i, e); }
 
-    { uint32_t i = i_type(0x340, 0, 2, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 0, 2, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_SET; e.csr_wen=false;
       e.is_csr=true; e.reg_write=true;
       check(d, "CSRRS rs1=x0", i, e); }
 
-    { uint32_t i = i_type(0x340, 2, 3, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 2, 3, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_CLEAR; e.csr_wen=true;
       e.is_csr=true; e.reg_write=true;
       check(d, "CSRRC", i, e); }
 
-    { uint32_t i = i_type(0x340, 5, 5, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 5, 5, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_WRITE; e.csr_wen=true;
       e.is_csr=true; e.use_zimm=true; e.reg_write=true;
       check(d, "CSRRWI", i, e); }
 
-    { uint32_t i = i_type(0x340, 5, 6, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 5, 6, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_SET; e.csr_wen=true;
       e.is_csr=true; e.use_zimm=true; e.reg_write=true;
       check(d, "CSRRSI zimm!=0", i, e); }
 
-    { uint32_t i = i_type(0x340, 0, 6, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 0, 6, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_SET; e.csr_wen=false;
       e.is_csr=true; e.use_zimm=true; e.reg_write=true;
       check(d, "CSRRSI zimm=0", i, e); }
 
-    { uint32_t i = i_type(0x340, 5, 7, 1, OP_SYSTEM);
+    { uint32_t i = i_type(0x340, 5, 7, 1, OpSystem);
       Exp e = fields(i); e.csr_op=CSR_CLEAR; e.csr_wen=true;
       e.is_csr=true; e.use_zimm=true; e.reg_write=true;
       check(d, "CSRRCI", i, e); }
 
     // ---- System instructions ----
-    { uint32_t i = i_type(0x000, 0, 0, 0, OP_SYSTEM);
+    { uint32_t i = i_type(0x000, 0, 0, 0, OpSystem);
       Exp e = fields(i); e.is_ecall=true;
       check(d, "ECALL", i, e); }
 
-    { uint32_t i = i_type(0x001, 0, 0, 0, OP_SYSTEM);
+    { uint32_t i = i_type(0x001, 0, 0, 0, OpSystem);
       Exp e = fields(i); e.is_ebreak=true;
       check(d, "EBREAK", i, e); }
 
-    { uint32_t i = i_type(0x302, 0, 0, 0, OP_SYSTEM);
+    { uint32_t i = i_type(0x302, 0, 0, 0, OpSystem);
       Exp e = fields(i); e.is_mret=true;
       check(d, "MRET", i, e); }
 
@@ -320,16 +320,62 @@ int main() {
     { Exp e; e.illegal=true;
       check(d, "illegal opcode", 0x0000007F, e); }
 
-    // Illegal funct7 in OP_REG: decoder still sets alu_op_valid/reg_write
-    // (they're set in the OP_REG case before the funct7 check), plus illegal=1.
+    // Illegal funct7 in OpReg: decoder still sets alu_op_valid/reg_write
+    // (they're set in the OpReg case before the funct7 check), plus illegal=1.
     // The pipeline's trap handling suppresses execution when illegal=1.
-    { uint32_t i = r(0x10, 3, 2, 0, 1, OP_REG);
+    { uint32_t i = r(0x10, 3, 2, 0, 1, OpReg);
       Exp e = fields(i); e.alu_op_valid=true; e.reg_write=true; e.illegal=true;
       check(d, "illegal ADD funct7", i, e); }
 
-    { uint32_t i = r(0x20, 3, 2, 1, 1, OP_REG);
+    { uint32_t i = r(0x20, 3, 2, 1, 1, OpReg);
       Exp e = fields(i); e.alu_op_valid=true; e.reg_write=true; e.illegal=true;
       check(d, "illegal SLL funct7", i, e); }
+
+    // ---- Invalid funct3 encodings (now decode as illegal) ----
+    // Branch funct3 010/011 are reserved. Control signals still set
+    // (branch=1) plus illegal=1; pipeline suppresses execution on illegal.
+    { uint32_t i = b_type(8, 2, 1, 2, OpBranch);
+      Exp e = fields(i); e.imm=8; e.branch=true; e.illegal=true;
+      check(d, "illegal BRANCH funct3=010", i, e); }
+    { uint32_t i = b_type(8, 2, 1, 3, OpBranch);
+      Exp e = fields(i); e.imm=8; e.branch=true; e.illegal=true;
+      check(d, "illegal BRANCH funct3=011", i, e); }
+
+    // Load funct3 011/110/111 are not defined in RV32I.
+    { uint32_t i = i_type(0, 4, 3, 3, OpLoad);
+      Exp e = fields(i); e.imm=0; e.use_imm=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_read=true; e.reg_write=true;
+      e.illegal=true;
+      check(d, "illegal LOAD funct3=011", i, e); }
+    { uint32_t i = i_type(0, 4, 6, 3, OpLoad);
+      Exp e = fields(i); e.imm=0; e.use_imm=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_read=true; e.reg_write=true;
+      e.illegal=true;
+      check(d, "illegal LOAD funct3=110", i, e); }
+
+    // Store funct3 011/100/101/110/111 are not defined in RV32I.
+    { uint32_t i = s_type(8, 2, 3, 3, OpStore);
+      Exp e = fields(i); e.imm=8; e.use_imm=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_write=true; e.illegal=true;
+      check(d, "illegal STORE funct3=011", i, e); }
+    { uint32_t i = s_type(8, 2, 3, 4, OpStore);
+      Exp e = fields(i); e.imm=8; e.use_imm=true;
+      e.alu_op_valid=true; e.alu_op=AluAdd; e.mem_write=true; e.illegal=true;
+      check(d, "illegal STORE funct3=100", i, e); }
+
+    // JALR with non-zero funct3 is illegal.
+    { uint32_t i = i_type(4, 2, 1, 1, OpJalr);
+      Exp e = fields(i); e.imm=4; e.use_imm=true;
+      e.jump=true; e.is_jalr=true; e.reg_write=true; e.illegal=true;
+      check(d, "illegal JALR funct3=001", i, e); }
+
+    // MISC-MEM with funct3 other than 000/001 is illegal.
+    { uint32_t i = i_type(0, 0, 2, 0, OpMiscMem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal MISC-MEM funct3=010", i, e); }
+
+    // FENCE.I (funct3=001) is a valid NOP in this pipeline.
+    { Exp e = fields(0x0000100F); check(d, "FENCE.I valid NOP", 0x0000100F, e); }
 
     delete d;
     printf("\n=== tb_decoder: %d tests, %d failures ===\n", tests, failures);

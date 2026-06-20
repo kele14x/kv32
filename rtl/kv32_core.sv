@@ -189,6 +189,7 @@ module kv32_core
     logic [11:0] csr_addr_w;
     logic [31:0] csr_wdata_w;
     logic        csr_wen_gated;
+    logic        csr_illegal;
 
     // mtvec[1:0] is the MODE field; we use Direct mode (bits stripped)
     // verilator lint_off UNUSEDSIGNAL
@@ -209,13 +210,16 @@ module kv32_core
 
     assign csr_addr_w    = instr_ex[31:20];
     assign csr_wdata_w   = use_zimm_ex ? {27'b0, instr_ex[19:15]} : fwd_a;
-    // Gate the CSR write on !mem_stall (so a CSR instruction stuck behind
-    // a stalled MEM doesn't re-write) and !trap_taken (so a trapping CSR
-    // instruction is squashed). Load-use bubbles don't need an explicit
-    // gate here: when a load-use bubble is inserted, the ID/EX register
-    // clears csr_wen_ex to 0 the following cycle, so csr_wen_gated
-    // naturally deasserts. Same reasoning applies to mret_taken below.
-    assign csr_wen_gated = csr_wen_ex && !mem_stall && !trap_taken;
+    // Gate the CSR write on !mem_stall so a CSR instruction stuck behind
+    // a stalled MEM doesn't re-write every cycle. !trap_taken is NOT needed
+    // here: the CSR module's write priority chain (trap > mret > csr write)
+    // already suppresses the write when a trap is taken. Omitting !trap_taken
+    // avoids a combinational loop through csr_illegal → trap_taken.
+    // Load-use bubbles don't need an explicit gate here: when a load-use
+    // bubble is inserted, the ID/EX register clears csr_wen_ex to 0 the
+    // following cycle, so csr_wen_gated naturally deasserts. Same reasoning
+    // applies to mret_taken below.
+    assign csr_wen_gated = csr_wen_ex && !mem_stall;
 
     // Instruction retired: a real (non-bubble) instruction is leaving WB
     // this cycle. Gated by !mem_stall so each instruction counts exactly
@@ -237,7 +241,7 @@ module kv32_core
         trap_val   = 32'h0;
 
         if (!mem_stall) begin
-            if (illegal_ex) begin
+            if (illegal_ex || csr_illegal) begin
                 trap_taken = 1'b1;
                 trap_cause = 32'd2;          // Illegal instruction
                 trap_val   = instr_ex;       // The bad instruction
@@ -332,7 +336,7 @@ module kv32_core
         if (mem_read_mem && d_valid) begin
             case (funct3_mem)
                 3'b000: begin // LB - load byte, sign-extend
-                    case (mem_addr_mem[1:0])
+                    unique case (mem_addr_mem[1:0])
                         2'b00: mem_result = {{24{d_rdata[7]}},  d_rdata[7:0]};
                         2'b01: mem_result = {{24{d_rdata[15]}}, d_rdata[15:8]};
                         2'b10: mem_result = {{24{d_rdata[23]}}, d_rdata[23:16]};
@@ -340,7 +344,7 @@ module kv32_core
                     endcase
                 end
                 3'b001: begin // LH - load halfword, sign-extend
-                    case (mem_addr_mem[1])
+                    unique case (mem_addr_mem[1])
                         1'b0: mem_result = {{16{d_rdata[15]}}, d_rdata[15:0]};
                         1'b1: mem_result = {{16{d_rdata[31]}}, d_rdata[31:16]};
                     endcase
@@ -349,7 +353,7 @@ module kv32_core
                     mem_result = d_rdata;
                 end
                 3'b100: begin // LBU - load byte, zero-extend
-                    case (mem_addr_mem[1:0])
+                    unique case (mem_addr_mem[1:0])
                         2'b00: mem_result = {24'h0, d_rdata[7:0]};
                         2'b01: mem_result = {24'h0, d_rdata[15:8]};
                         2'b10: mem_result = {24'h0, d_rdata[23:16]};
@@ -357,7 +361,7 @@ module kv32_core
                     endcase
                 end
                 3'b101: begin // LHU - load halfword, zero-extend
-                    case (mem_addr_mem[1])
+                    unique case (mem_addr_mem[1])
                         1'b0: mem_result = {16'h0, d_rdata[15:0]};
                         1'b1: mem_result = {16'h0, d_rdata[31:16]};
                     endcase
@@ -834,7 +838,7 @@ module kv32_core
             // Position write data and calculate byte enables for sub-word stores
             case (funct3_ex[1:0])
                 2'b00: begin // SB - store byte
-                    case (ex_result[1:0])
+                    unique case (ex_result[1:0])
                         2'b00: begin
                             mem_wdata_mem <= {24'h0, fwd_b[7:0]};
                             mem_be_mem    <= 4'b0001;
@@ -854,7 +858,7 @@ module kv32_core
                     endcase
                 end
                 2'b01: begin // SH - store halfword
-                    case (ex_result[1])
+                    unique case (ex_result[1])
                         1'b0: begin
                             mem_wdata_mem <= {16'h0, fwd_b[15:0]};
                             mem_be_mem    <= 4'b0011;
@@ -898,6 +902,7 @@ module kv32_core
         .csr_wdata    (csr_wdata_w),
         .csr_op       (csr_op_ex),
         .csr_wen      (csr_wen_gated),
+        .is_csr       (is_csr_ex),
         .csr_rdata    (csr_rdata),
         .irq_external (irq_external_i),
         .irq_timer    (irq_timer_i),
@@ -914,6 +919,7 @@ module kv32_core
         .mtvec_out    (mtvec_out),
         .mepc_out     (mepc_out),
         .mstatus_mie  (mstatus_mie),
+        .csr_illegal  (csr_illegal),
         .instr_retired(instr_retired)
     );
 
