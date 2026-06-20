@@ -132,6 +132,51 @@ riscv-tests: verilator-build
 	echo "  $$pass passed, $$fail failed, $$skip timeout (of $$total total)"; \
 	echo "==========================="
 
+# ---- Unit Tests (per-module Verilator C++ testbenches) ----
+# Each target builds and runs an isolated testbench for one submodule.
+# This catches RTL bugs at the module boundary before integration.
+
+UNIT_TESTS = alu regfile decoder csr mem_arbiter
+
+unit-test-alu: $(TB_DIR)/tb_alu.cpp $(RTL_DIR)/kv32_alu.sv
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_alu \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_alu.sv $(TB_DIR)/tb_alu.cpp \
+		--Mdir obj_dir_alu
+	./obj_dir_alu/Vkv32_alu
+
+unit-test-regfile: $(TB_DIR)/tb_regfile.cpp $(RTL_DIR)/kv32_regfile.sv
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_regfile \
+		$(RTL_DIR)/kv32_regfile.sv $(TB_DIR)/tb_regfile.cpp \
+		--Mdir obj_dir_regfile
+	./obj_dir_regfile/Vkv32_regfile
+
+unit-test-decoder: $(TB_DIR)/tb_decoder.cpp $(RTL_DIR)/kv32_decoder.sv
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_decoder \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_decoder.sv $(TB_DIR)/tb_decoder.cpp \
+		--Mdir obj_dir_decoder
+	./obj_dir_decoder/Vkv32_decoder
+
+unit-test-csr: $(TB_DIR)/tb_csr.cpp $(RTL_DIR)/kv32_csr.sv
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_csr \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_csr.sv $(TB_DIR)/tb_csr.cpp \
+		--Mdir obj_dir_csr
+	./obj_dir_csr/Vkv32_csr
+
+unit-test-mem_arbiter: $(TB_DIR)/tb_mem_arbiter.cpp $(RTL_DIR)/kv32_mem_arbiter.sv
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_mem_arbiter \
+		$(RTL_DIR)/kv32_mem_arbiter.sv $(TB_DIR)/tb_mem_arbiter.cpp \
+		--Mdir obj_dir_mem_arbiter
+	./obj_dir_mem_arbiter/Vkv32_mem_arbiter
+
+unit-tests: $(addprefix unit-test-,$(UNIT_TESTS))
+	@echo ""
+	@echo "=== All unit tests passed ==="
+
 # ---- Lint ----
 
 lint: $(RTL_SOURCES)
@@ -141,8 +186,9 @@ lint: $(RTL_SOURCES)
 
 clean:
 	rm -f kv32_core_tb.vcd
-	rm -rf obj_dir
+	rm -rf obj_dir obj_dir_alu obj_dir_regfile obj_dir_decoder obj_dir_csr obj_dir_mem_arbiter
 
 .PHONY: verilator verilator-build test-alu test-subword test-all test-latency \
         riscv-tests-compile riscv-test-% riscv-tests riscv-tests-latency \
-        lint clean
+        unit-test-alu unit-test-regfile unit-test-decoder unit-test-csr \
+        unit-test-mem_arbiter unit-tests lint clean

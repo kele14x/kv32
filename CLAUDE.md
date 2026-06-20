@@ -14,7 +14,9 @@ kv32 is a minimal RISC-V RV32GC soft core in SystemVerilog, targeting Linux boot
 
 **Always run `make lint` first** after any RTL change. Verilator catches most errors before simulation.
 
-For the full command list (`make verilator`, `make test-subword`, `make riscv-tests`, `make riscv-test-<name>`, etc.), see [README.md](README.md#building-and-running).
+**Run `make unit-tests` after submodule changes** to catch bugs at module boundaries before integration. Each submodule has an isolated Verilator C++ testbench (`tb/tb_<module>.cpp`).
+
+For the full command list (`make verilator`, `make test-subword`, `make unit-tests`, `make riscv-tests`, `make riscv-test-<name>`, etc.), see [README.md](README.md#building-and-running).
 
 ## Architecture — Agent Notes
 
@@ -70,6 +72,20 @@ Implemented in `kv32_core.sv`:
 - **Stores** (lines 436-476): data positioning uses `fwd_b` (forwarded rs2, not raw `rs2_data`) and generates byte enables from `funct3_ex[1:0]` and `ex_result[1:0]`
 
 ## Testing
+
+### Unit Tests
+
+Each RTL submodule has an isolated Verilator C++ testbench (`tb/tb_<module>.cpp`):
+
+- `tb_alu.cpp`: all 10 ALU operations, edge cases (overflow, signed/unsigned, shifts)
+- `tb_regfile.cpp`: x0 hardwire, write-then-read, write-during-read, dual-port, we gating
+- `tb_decoder.cpp`: all opcodes, immediate types, control signals, CSR variants, illegal instructions
+- `tb_csr.cpp`: read/write/set/clear, read-before-write, trap/MRET, counters, mtvec MODE masking, priority chain
+- `tb_mem_arbiter.cpp`: d-port priority, zero-latency response, multi-cycle latency, one-cycle gnt pulse, latched fields
+
+Run with `make unit-tests` (aggregate) or `make unit-test-<module>` (individual). Each testbench is compiled with its module as the Verilator top (`--top-module kv32_<module>`) in a separate `obj_dir_<module>/` directory.
+
+### Integration Tests
 
 Tests are C++ (`tb/sim_main.cpp`) using the Verilator API. The testbench drives clock/reset, implements a 64 KiB BRAM model (req/gnt/valid protocol), loads RISC-V instruction sequences, and checks register file state.
 

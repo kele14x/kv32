@@ -31,6 +31,21 @@ make test-subword       # run the sub-word memory test
 make test-all           # run both
 ```
 
+### Unit tests
+
+Each RTL submodule has an isolated Verilator C++ testbench that exercises it independently of the full core. These catch module-boundary bugs before integration.
+
+```bash
+make unit-tests                       # run all 5 unit tests
+make unit-test-alu                    # ALU: all 10 ops, edge cases
+make unit-test-regfile                # Regfile: x0, write-during-read, dual-port
+make unit-test-decoder                # Decoder: all opcodes, immediates, CSR variants
+make unit-test-csr                    # CSR: read/write/set/clear, trap, MRET, counters
+make unit-test-mem_arbiter            # Arbiter: priority, zero/multi-cycle, gnt pulse
+```
+
+Each testbench prints a summary line (`=== tb_<module>: N tests, M failures ===`) and exits non-zero on failure.
+
 ### riscv-tests
 
 [riscv-tests](https://github.com/riscv-software-src/riscv-tests) is included as a git submodule at `tests/riscv-tests`.

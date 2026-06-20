@@ -69,7 +69,7 @@ module kv32_csr
     // Extensions bitmap (bits [25:0]): A=0, C=2, D=3, F=5, I=8, M=12, S=18, U=20.
     // Update this value as each extension lands.
     // -------------------------------------------------------------------------
-    localparam logic [31:0] MISA_VAL = {2'b01, 4'b0000, 26'b00_0000_0000_0001_0000_0000_0000};
+    localparam logic [31:0] MISA_VAL = {2'b01, 4'b0000, 26'b00_0000_0000_0000_0001_0000_0000};
 
     // -------------------------------------------------------------------------
     // CSR storage registers
@@ -188,20 +188,31 @@ module kv32_csr
             minstret_r    <= 64'h0;
         end else begin
             // ------------------------------------------------------------------
-            // Counters (always increment, structurally outside the
-            // trap_taken > mret_taken > csr_wen priority chain below).
-            //   - mcycle_r: increments every cycle (correct by definition).
-            //   - minstret_r: increments when instr_retired is high.
-            //     On a trap, the faulting instruction's WB slot is squashed
-            //     (EX/MEM register cleared in kv32_core.sv), so
-            //     instr_retired is low that cycle and the trapping
-            //     instruction does NOT count toward minstret. This is the
-            //     RISC-V-preferred behavior: a trapping instruction is not
-            //     considered retired.
+            // Counters: increment unless being written via CSR this cycle.
+            //   - mcycle_r: increments every cycle (unless CSR-written).
+            //   - minstret_r: increments when instr_retired is high
+            //     (unless CSR-written).
+            //
+            // The write-suppress guard is needed because the counter
+            // increment (full 64-bit non-blocking) and the CSR write
+            // (partial 32-bit non-blocking) would otherwise conflict —
+            // the increment would clobber the written value on the same
+            // clock edge.
+            //
+            // On a trap, the faulting instruction's WB slot is squashed
+            // (EX/MEM register cleared in kv32_core.sv), so
+            // instr_retired is low that cycle and the trapping
+            // instruction does NOT count toward minstret. This is the
+            // RISC-V-preferred behavior: a trapping instruction is not
+            // considered retired.
             // ------------------------------------------------------------------
-            mcycle_r <= mcycle_r + 64'h1;
+            if (!(csr_wen && csr_op != CSR_OP_NONE &&
+                  (csr_addr == CSR_MCYCLE || csr_addr == CSR_MCYCLEH)))
+                mcycle_r <= mcycle_r + 64'h1;
 
-            if (instr_retired)
+            if (instr_retired &&
+                !(csr_wen && csr_op != CSR_OP_NONE &&
+                  (csr_addr == CSR_MINSTRET || csr_addr == CSR_MINSTRETH)))
                 minstret_r <= minstret_r + 64'h1;
 
             // ------------------------------------------------------------------
