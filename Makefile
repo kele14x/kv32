@@ -3,6 +3,43 @@
 RTL_DIR = rtl
 TB_DIR  = tb
 
+# ---- Help ----
+
+help:
+	@echo "kv32 — available make targets"
+	@echo ""
+	@echo "  Build & Lint:"
+	@echo "    verilator              Build and run the integration testbench (default)"
+	@echo "    verilator-build        Build only (no run)"
+	@echo "    lint                   Verilator lint check (-Wall)"
+	@echo "    format                 Format RTL files in-place with verible-verilog-format"
+	@echo "    format-check           Verify RTL files are already formatted"
+	@echo "    clean                  Remove all build artifacts"
+	@echo "    clean-integration      Remove obj_dir/ (integration testbench)"
+	@echo "    clean-unit             Remove obj_dir_*/ (unit testbenches)"
+	@echo "    clean-riscv-tests      Remove build/riscv-tests/ (compiled ELFs)"
+	@echo ""
+	@echo "  Integration Tests (full core, sim_main.cpp):"
+	@echo "    test-alu               Run the ALU integration test"
+	@echo "    test-subword           Run the sub-word memory test"
+	@echo "    test-all               Run all built-in integration tests"
+	@echo "    test-latency           Built-in tests with 2-cycle memory latency"
+	@echo ""
+	@echo "  Unit Tests (per-module, isolated testbenches):"
+	@echo "    unit-tests             Run all 5 unit tests"
+	@echo "    unit-test-alu          ALU: 10 ops, edge cases"
+	@echo "    unit-test-regfile      Regfile: x0, write-during-read, dual-port"
+	@echo "    unit-test-decoder      Decoder: opcodes, immediates, CSR variants"
+	@echo "    unit-test-csr          CSR: read/write, trap, MRET, counters"
+	@echo "    unit-test-mem_arbiter  Arbiter: priority, latency, gnt pulse"
+	@echo ""
+	@echo "  riscv-tests (requires RISC-V toolchain):"
+	@echo "    riscv-tests-compile    Cross-compile all rv32ui tests to build/"
+	@echo "    riscv-tests            Run all rv32ui tests (zero latency)"
+	@echo "    riscv-tests-latency    Run all rv32ui tests (2-cycle latency)"
+	@echo "    riscv-test-<name>      Run a single test (e.g. riscv-test-add)"
+	@echo ""
+
 RTL_SOURCES = \
     $(RTL_DIR)/kv32_pkg.sv \
     $(RTL_DIR)/kv32_alu.sv \
@@ -177,6 +214,40 @@ unit-tests: $(addprefix unit-test-,$(UNIT_TESTS))
 	@echo ""
 	@echo "=== All unit tests passed ==="
 
+# ---- Format ----
+
+# verible-verilog-format path (override with VERIBLE_FORMAT=/path/to/verible-verilog-format)
+VERIBLE_FORMAT ?= $(HOME)/tools/verible/bin/verible-verilog-format
+
+# Format all RTL files in-place
+format: $(RTL_SOURCES)
+	@if ! command -v $(VERIBLE_FORMAT) >/dev/null 2>&1 && [ ! -x $(VERIBLE_FORMAT) ]; then \
+		echo "Error: verible-verilog-format not found at $(VERIBLE_FORMAT)"; \
+		echo "Override with: make format VERIBLE_FORMAT=/path/to/verible-verilog-format"; \
+		exit 1; \
+	fi
+	$(VERIBLE_FORMAT) --inplace $(RTL_SOURCES)
+
+# Check that all RTL files are already formatted (non-zero exit on drift)
+format-check: $(RTL_SOURCES)
+	@if ! command -v $(VERIBLE_FORMAT) >/dev/null 2>&1 && [ ! -x $(VERIBLE_FORMAT) ]; then \
+		echo "Error: verible-verilog-format not found at $(VERIBLE_FORMAT)"; \
+		exit 1; \
+	fi
+	@ok=1; \
+	for f in $(RTL_SOURCES); do \
+		if ! $(VERIBLE_FORMAT) $$f | diff -q - $$f >/dev/null 2>&1; then \
+			echo "  NOT FORMATTED: $$f"; ok=0; \
+		fi; \
+	done; \
+	if [ $$ok -eq 1 ]; then \
+		echo "All RTL files are verible-formatted"; \
+	else \
+		echo ""; \
+		echo "Format drift detected — run 'make format' to fix"; \
+		exit 1; \
+	fi
+
 # ---- Lint ----
 
 lint: $(RTL_SOURCES)
@@ -184,11 +255,24 @@ lint: $(RTL_SOURCES)
 
 # ---- Clean ----
 
-clean:
-	rm -f kv32_core_tb.vcd
-	rm -rf obj_dir obj_dir_alu obj_dir_regfile obj_dir_decoder obj_dir_csr obj_dir_mem_arbiter
+clean: clean-integration clean-unit clean-riscv-tests
+	@echo "Removed all build artifacts"
 
-.PHONY: verilator verilator-build test-alu test-subword test-all test-latency \
+clean-integration:
+	rm -f kv32_core_tb.vcd
+	rm -rf obj_dir
+
+clean-unit:
+	rm -rf obj_dir_alu obj_dir_regfile obj_dir_decoder obj_dir_csr obj_dir_mem_arbiter
+
+clean-riscv-tests:
+	rm -rf $(RISCV_TESTS_BUILD)
+	rmdir build 2>/dev/null || true
+
+.PHONY: help verilator verilator-build test-alu test-subword test-all test-latency \
         riscv-tests-compile riscv-test-% riscv-tests riscv-tests-latency \
         unit-test-alu unit-test-regfile unit-test-decoder unit-test-csr \
-        unit-test-mem_arbiter unit-tests lint clean
+        unit-test-mem_arbiter unit-tests lint format format-check clean \
+        clean-integration clean-unit clean-riscv-tests
+
+.DEFAULT_GOAL := help

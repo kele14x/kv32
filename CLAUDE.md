@@ -16,6 +16,8 @@ kv32 is a minimal RISC-V RV32GC soft core in SystemVerilog, targeting Linux boot
 
 **Always run `make lint` first** after any RTL change. Verilator catches most errors before simulation.
 
+**Run `make format` after editing RTL files.** This runs `verible-verilog-format` in-place on `rtl/*.sv`, which both enforces a consistent style and acts as a secondary syntax check (verible parses the source, so malformed SV will fail to format). Verify with `make format-check` if you only want to detect drift. Override the formatter path with `make format VERIBLE_FORMAT=/path/to/verible-verilog-format` (default: `~/tools/verible/bin/verible-verilog-format`).
+
 **Run `make unit-tests` after submodule changes** to catch bugs at module boundaries before integration.
 
 For the full command list (`make verilator`, `make test-subword`, `make unit-tests`, `make riscv-tests`, `make riscv-test-<name>`, etc.), see [README.md](README.md#building-and-running). Test infrastructure and per-suite coverage are documented in [docs/verification.md](docs/verification.md).
@@ -58,6 +60,7 @@ For test infrastructure details (BRAM model, `mem_responder`, `--latency`, `--bi
 - Pipeline register updates use `if (!stall)` pattern to hold values during stalls
 - Suppress Verilator warnings with `/* verilator lint_off */` / `/* lint_on */` pairs around the specific signal, not globally
 - Run `make lint` after every RTL change
+- Run `make format` after every RTL change (also catches syntax errors — verible parses the source before formatting)
 
 ## Project Phases
 
