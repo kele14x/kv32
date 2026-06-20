@@ -19,6 +19,7 @@ module kv32_decoder
     output logic        reg_write,    // Register writeback
     output logic        branch,       // Branch instruction
     output logic        jump,         // Jump instruction (JAL/JALR)
+    output logic        is_jalr,      // JALR instruction (distinguishes from JAL)
     output logic        illegal,      // Illegal instruction
     output logic        lui,          // LUI instruction
     output logic        auipc,        // AUIPC instruction
@@ -101,6 +102,7 @@ module kv32_decoder
         reg_write    = 1'b0;
         branch       = 1'b0;
         jump         = 1'b0;
+        is_jalr      = 1'b0;
         illegal      = 1'b0;
         lui          = 1'b0;
         auipc        = 1'b0;
@@ -132,8 +134,9 @@ module kv32_decoder
             end
 
             OP_JALR: begin
-                use_imm = 1'b1;
-                jump    = 1'b1;
+                use_imm  = 1'b1;
+                jump     = 1'b1;
+                is_jalr  = 1'b1;
                 reg_write = 1'b1;
             end
 
@@ -266,12 +269,16 @@ module kv32_decoder
                     end
                     3'b010: begin // CSRRS
                         csr_op    = CSR_OP_SET;
+                        // Suppress write when rs1==x0: per spec, CSRRS with
+                        // rs1=x0 is a pure read (no side effects).
                         csr_wen   = (rs1 != 5'h0);
                         is_csr    = 1'b1;
                         reg_write = 1'b1;
                     end
                     3'b011: begin // CSRRC
                         csr_op    = CSR_OP_CLEAR;
+                        // Suppress write when rs1==x0: per spec, CSRRC with
+                        // rs1=x0 is a pure read (no side effects).
                         csr_wen   = (rs1 != 5'h0);
                         is_csr    = 1'b1;
                         reg_write = 1'b1;
@@ -285,6 +292,10 @@ module kv32_decoder
                     end
                     3'b110: begin // CSRRSI
                         csr_op    = CSR_OP_SET;
+                        // Same zero-suppress as CSRRS, but the rs1 field
+                        // holds a 5-bit zimm. zimm==0 makes set a no-op,
+                        // so suppressing the write is equivalent and
+                        // avoids a spurious CSR write cycle.
                         csr_wen   = (instr[19:15] != 5'h0);
                         is_csr    = 1'b1;
                         use_zimm  = 1'b1;
@@ -292,6 +303,10 @@ module kv32_decoder
                     end
                     3'b111: begin // CSRRCI
                         csr_op    = CSR_OP_CLEAR;
+                        // Same zero-suppress as CSRRC, but the rs1 field
+                        // holds a 5-bit zimm. zimm==0 makes clear a no-op,
+                        // so suppressing the write is equivalent and
+                        // avoids a spurious CSR write cycle.
                         csr_wen   = (instr[19:15] != 5'h0);
                         is_csr    = 1'b1;
                         use_zimm  = 1'b1;

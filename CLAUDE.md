@@ -12,8 +12,6 @@ kv32 is a minimal RISC-V RV32GC soft core in SystemVerilog, targeting Linux boot
 
 ## Build and Test
 
-**Prefer Verilator over Icarus Verilog** — stricter lint, faster simulation, no `sorry` warnings on `unique case` in `always_comb`. Icarus is a fallback only.
-
 **Always run `make lint` first** after any RTL change. Verilator catches most errors before simulation.
 
 For the full command list (`make verilator`, `make test-subword`, `make riscv-tests`, `make riscv-test-<name>`, etc.), see [README.md](README.md#building-and-running).
@@ -82,8 +80,7 @@ Tests are C++ (`tb/sim_main.cpp`) using the Verilator API. The testbench drives 
 - `read_reg()`: reads register file via `rootp->` internal signal access
 - Test programs: `TestWord[]` arrays (address + instruction pairs)
 - Expected results: `RegCheck[]` arrays (register + expected value + label)
-
-**Legacy SV testbenches**: `tb/kv32_core_tb.sv` and `tb/kv32_subword_tb.sv` remain for Icarus Verilog compatibility but are not used by the Verilator flow.
+- `--latency <n>` option: delays `mem_valid` by N cycles to exercise arbiter hold, misalignment wait states, and pipeline `mem_stall` paths
 
 ### Debugging Tips
 
@@ -95,15 +92,14 @@ Inspect Verilator internal signals via `rootp->` or add `printf` in `sim_main.cp
 - Memory: `d_req`, `d_gnt`, `d_valid`, `d_addr`, `d_wdata`, `d_be`
 - Control: `mem_read_ex`, `mem_write_ex`, `alu_op_valid_ex`
 
-### Known Issues
+### Phase 5 TODO (not bugs in Phase 1, but needed for compliance)
 
-- **OP_SYSTEM handling incomplete**: decoder sets `reg_write=1` for all SYSTEM instructions without distinguishing ECALL/EBREAK/CSRR*/MRET. Will cause incorrect register writes until M-mode CSR file is fully wired. Full privilege mode system (M/S/U switching, trap delegation) is a Phase 5 target.
-- **Missing FENCE instruction**: opcode `7'b0001111` (MISC-MEM) is not decoded and triggers `illegal`. Required for `riscv-tests` compatibility.
-- **ALU operation codes duplicated**: `ALU_ADD`, `ALU_SUB`, etc. defined independently in both `kv32_alu.sv` and `kv32_decoder.sv`. Should be unified into `kv32_pkg` to avoid maintenance risk.
+- **Illegal CSR accesses should trap**: Unimplemented CSR reads return 0 and writes are ignored (`kv32_csr.sv` `default` cases), instead of raising an illegal-instruction exception. This is non-compliant with the RISC-V privileged spec but doesn't affect riscv-tests. Fix in Phase 5 when trap handling is fully exercised.
+- **Invalid instruction encodings should trap**: Invalid branch funct3 (010, 011), invalid load/store funct3, invalid JALR funct3 (non-zero), and broad OP_MISC_MEM handling all decode as valid/NOP instead of illegal. Fix in Phase 5 by adding funct3 validation in the decoder.
 
 ## Code Style
 
-- SystemVerilog 2012 (`-g2012` for iverilog)
+- SystemVerilog 2012
 - `always_comb` for combinational, `always_ff @(posedge clk)` for sequential
 - `unique case` for case statements (helps lint)
 - Pipeline register updates use `if (!stall)` pattern to hold values during stalls

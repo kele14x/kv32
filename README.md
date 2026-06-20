@@ -8,9 +8,8 @@ See [SPEC.md](SPEC.md) for the full architectural specification (pipeline, CSR m
 
 ## Prerequisites
 
-- **Verilator** (recommended) — lint checking and simulation
-- **Icarus Verilog** (optional fallback)
-- **riscv64-elf-gcc** — cross-compiler for building riscv-tests binaries
+- **Verilator** — lint checking and simulation
+- **RISC-V cross-compiler** — `riscv64-unknown-elf-gcc`, `riscv32-unknown-elf-gcc`, or `riscv64-elf-gcc` for building riscv-tests binaries (auto-detected by the Makefile)
 
 ## Building and Running
 
@@ -50,10 +49,10 @@ The tests are compiled to ELF binaries targeting the RV32I + Zicsr ISA:
 make riscv-tests-compile
 ```
 
-This cross-compiles every `rv32ui` test into `build/riscv-tests/`. By default it uses `riscv64-elf-gcc` — override with:
+This cross-compiles every `rv32ui` test into `build/riscv-tests/`. The Makefile auto-detects the RISC-V cross-compiler (`riscv64-unknown-elf-gcc` → `riscv32-unknown-elf-gcc` → `riscv64-elf-gcc`). Override with:
 
 ```bash
-make riscv-tests-compile RISCV_GCC=riscv32-unknown-elf-gcc
+make riscv-tests-compile RISCV_GCC=/path/to/riscv-gcc
 ```
 
 #### Run all tests
@@ -99,13 +98,7 @@ Options:
 | `--test <name>`   | Run a built-in test: `alu` / `0`, `subword` / `1`              | `alu`          |
 | `--cycles <n>`    | Maximum simulation cycles before timeout                       | `50000`        |
 | `--notrace`       | Disable VCD trace output                                       | *(tracing on)* |
-
-### Icarus Verilog (fallback)
-
-```bash
-make iverilog            # core ALU test
-make iverilog-subword    # sub-word memory test
-```
+| `--latency <n>`   | Memory response latency in cycles (0 = combinational)          | `0`            |
 
 ## Project Layout
 
@@ -120,7 +113,6 @@ rtl/          SystemVerilog RTL sources
   kv32_pkg.sv         Shared types and constants
 tb/           Testbenches
   sim_main.cpp        Verilator C++ test driver
-  kv32_core_tb.sv     Legacy SystemVerilog testbench (Icarus)
 tests/        External test suites
   riscv-tests/        riscv-tests submodule
 docs/         Phase status and summary notes

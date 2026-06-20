@@ -95,12 +95,18 @@ module kv32_core
     logic [31:0] instr_id, instr_ex;
     // verilator lint_on UNUSEDSIGNAL
 
+    // Instruction-valid tracking: distinguishes real instructions from
+    // bubbles (flushed slots, load-use bubbles, reset state) so that
+    // minstret counts every retired instruction, not just those that
+    // write a register.
+    logic        instr_valid_id, instr_valid_ex, instr_valid_mem, instr_valid_wb;
+
     // Decode outputs
     logic [ 4:0] rd_id, rs1_id, rs2_id;
     logic [ 2:0] funct3_id;
     logic [31:0] imm_id;
     logic        use_imm_id, alu_op_valid_id, mem_read_id, mem_write_id;
-    logic        reg_write_id, branch_id, jump_id, illegal_id;
+    logic        reg_write_id, branch_id, jump_id, is_jalr_id, illegal_id;
     logic        lui_id, auipc_id;
     logic [ 3:0] alu_op_id;
     csr_op_t     csr_op_id;
@@ -130,6 +136,7 @@ module kv32_core
         .reg_write    (reg_write_id),
         .branch       (branch_id),
         .jump         (jump_id),
+        .is_jalr      (is_jalr_id),
         .illegal      (illegal_id),
         .lui          (lui_id),
         .auipc        (auipc_id),
@@ -159,7 +166,7 @@ module kv32_core
     );
     logic [31:0] imm_ex;
     logic        use_imm_ex, alu_op_valid_ex, mem_read_ex, mem_write_ex;
-    logic        reg_write_ex, branch_ex, jump_ex, illegal_ex;
+    logic        reg_write_ex, branch_ex, jump_ex, is_jalr_ex, illegal_ex;
     logic        lui_ex, auipc_ex;
     logic [ 3:0] alu_op_ex;
     csr_op_t     csr_op_ex;
@@ -202,10 +209,18 @@ module kv32_core
 
     assign csr_addr_w    = instr_ex[31:20];
     assign csr_wdata_w   = use_zimm_ex ? {27'b0, instr_ex[19:15]} : fwd_a;
+    // Gate the CSR write on !mem_stall (so a CSR instruction stuck behind
+    // a stalled MEM doesn't re-write) and !trap_taken (so a trapping CSR
+    // instruction is squashed). Load-use bubbles don't need an explicit
+    // gate here: when a load-use bubble is inserted, the ID/EX register
+    // clears csr_wen_ex to 0 the following cycle, so csr_wen_gated
+    // naturally deasserts. Same reasoning applies to mret_taken below.
     assign csr_wen_gated = csr_wen_ex && !mem_stall && !trap_taken;
 
-    // Instruction retired: valid instruction completing WB that is not a bubble
-    assign instr_retired = reg_write_wb;
+    // Instruction retired: a real (non-bubble) instruction is leaving WB
+    // this cycle. Gated by !mem_stall so each instruction counts exactly
+    // once (when WB advances), not repeatedly during MEM stalls.
+    assign instr_retired = instr_valid_wb && !mem_stall;
 
     // -------------------------------------------------------------------------
     // Trap detection (EX stage): illegal, ECALL, EBREAK
@@ -267,9 +282,9 @@ module kv32_core
 
         if (jump_ex) begin
             branch_taken = 1'b1;
-            if (!instr_ex[3]) begin // JALR (opcode bit3=0: 1100111)
+            if (is_jalr_ex) begin
                 branch_target = (fwd_a + imm_ex) & ~32'h1;
-            end else begin // JAL (opcode bit3=1: 1101111)
+            end else begin // JAL
                 branch_target = pc_ex + imm_ex;
             end
         end
@@ -362,7 +377,10 @@ module kv32_core
     typedef enum logic [2:0] {
         MA_IDLE,
         MA_FIRST,     // First access in flight (arbiter D_PORT_ACTIVE)
-        MA_WAIT,      // First access done, suppress d_req until arbiter IDLE
+        MA_DRAIN,     // First access done; 1-cycle drain to let arbiter
+                      // return to IDLE. (MA_SECOND below re-checks
+                      // arb_idle as a safety net for slaves that hold
+                      // mem_valid for >1 cycle.)
         MA_SECOND,    // Second access being driven (arbiter IDLE → latch → D_PORT_ACTIVE)
         MA_HOLD       // Second access in flight (d_valid suppressed until done)
     } ma_state_t;
@@ -374,7 +392,13 @@ module kv32_core
     logic [ 1:0] ma_size;
     // verilator lint_on UNUSEDSIGNAL
 
-    // Misalignment detection
+    // Misalignment detection.
+    // non_crossing_ma is only ever set for the SH@addr[1:0]=01 case (a
+    // halfword store straddling bytes 1-2 of a single word). Any other
+    // misaligned access either crosses a word boundary (word_crossing)
+    // or is naturally aligned. The load-side shift below relies on this
+    // exact-case assumption — do not generalize without revisiting that
+    // shift logic.
     logic word_crossing;
     logic non_crossing_ma;
     always_comb begin
@@ -457,11 +481,11 @@ module kv32_core
                 end
                 MA_FIRST: begin
                     if (d_valid_a) begin
-                        ma_state       <= MA_WAIT;
+                        ma_state       <= MA_DRAIN;
                         ma_first_rdata <= d_rdata_a;
                     end
                 end
-                MA_WAIT: begin
+                MA_DRAIN: begin
                     ma_state <= MA_SECOND;
                 end
                 MA_SECOND: begin
@@ -512,7 +536,9 @@ module kv32_core
                 if (d_we) d_wdata_a = first_wdata;
             end
 
-            MA_WAIT: begin
+            MA_DRAIN: begin
+                // Suppress d_req while arbiter drains back to IDLE.
+                // Latched first-access signals held for stability.
                 d_req_a   = 1'b0;
                 d_addr_a  = {d_addr[31:2], 2'b00};
                 d_be_a    = first_be;
@@ -562,8 +588,11 @@ module kv32_core
             endcase
         end
 
-        // Non-crossing misaligned load (SH at offset 1): shift rdata right
-        // so the existing load extraction picks up bytes 1,2 correctly
+        // Non-crossing misaligned load: only SH@addr[1:0]=01 reaches here
+        // (see non_crossing_ma detector above). Shift rdata right by 8 so
+        // the existing LH extractor (which keys on mem_addr_mem[1]=0)
+        // picks up bytes 1,2 of the word as the low halfword. Any other
+        // non-crossing case is naturally aligned and bypasses this path.
         if (non_crossing_ma && !d_we && d_valid_a) begin
             d_rdata = {8'h0, d_rdata_a[31:8]};
         end
@@ -621,10 +650,19 @@ module kv32_core
     assign id_stall  = load_use_hazard || mem_stall || if_wait;
     assign if_stall  = if_wait || load_use_hazard || mem_stall;
 
-    // Flush: branch_taken OR trap_taken both flush IF and ID stages
+    // Flush: branch_taken OR trap_taken both flush IF and ID stages.
+    // ex_flush also inserts a bubble into EX for both cases:
+    //   - trap_taken: squashes the faulting instruction (don't write back)
+    //   - branch_taken: squashes the instruction in ID that would have
+    //     advanced to EX. The branch itself is in EX and continues to
+    //     MEM/WB normally (EX/MEM register checks trap_taken, not
+    //     ex_flush, so the branch's reg_write still propagates).
+    // Without the branch_taken case in ex_flush, the instruction in ID
+    // at the moment of the branch would advance to EX and execute
+    // despite being flushed from IF/ID.
     assign if_flush = branch_taken || trap_taken;
     assign id_flush = branch_taken || trap_taken;
-    assign ex_flush = trap_taken;  // Trap also squashes the faulting instruction in EX
+    assign ex_flush = branch_taken || trap_taken;
 
     // IF stage
     always_ff @(posedge clk or negedge rst_n) begin
@@ -649,14 +687,17 @@ module kv32_core
     // IF/ID pipeline register
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pc_id    <= 32'h0;
-            instr_id <= 32'h00000013; // NOP (ADDI x0, x0, 0)
+            pc_id          <= 32'h0;
+            instr_id       <= 32'h00000013; // NOP (ADDI x0, x0, 0)
+            instr_valid_id <= 1'b0;
         end else if (id_flush) begin
-            instr_id <= 32'h00000013; // NOP
+            instr_id       <= 32'h00000013; // NOP
+            instr_valid_id <= 1'b0;         // Squashed by branch/trap
         end else if (!id_stall) begin
             if (i_valid) begin
-                pc_id    <= pc_if;
-                instr_id <= i_rdata;
+                pc_id          <= pc_if;
+                instr_id       <= i_rdata;
+                instr_valid_id <= 1'b1;     // Real instruction loaded
             end
         end
     end
@@ -679,6 +720,7 @@ module kv32_core
             reg_write_ex    <= 1'b0;
             branch_ex       <= 1'b0;
             jump_ex         <= 1'b0;
+            is_jalr_ex      <= 1'b0;
             illegal_ex      <= 1'b0;
             lui_ex          <= 1'b0;
             auipc_ex        <= 1'b0;
@@ -689,6 +731,7 @@ module kv32_core
             use_zimm_ex     <= 1'b0;
             is_ecall_ex     <= 1'b0;
             is_ebreak_ex    <= 1'b0;
+            instr_valid_ex  <= 1'b0;
         end else if (ex_stall) begin
             // Backpressure from MEM stage — freeze ID/EX
         end else if (ex_flush) begin
@@ -697,6 +740,7 @@ module kv32_core
             mem_write_ex  <= 1'b0;
             branch_ex     <= 1'b0;
             jump_ex       <= 1'b0;
+            is_jalr_ex    <= 1'b0;
             lui_ex        <= 1'b0;
             auipc_ex      <= 1'b0;
             csr_wen_ex    <= 1'b0;
@@ -705,6 +749,7 @@ module kv32_core
             illegal_ex    <= 1'b0;
             is_ecall_ex   <= 1'b0;
             is_ebreak_ex  <= 1'b0;
+            instr_valid_ex <= 1'b0;        // Trap squashes the faulting instruction
         end else if (load_use_hazard || if_wait) begin
             // Insert bubble: load-use hazard or IF waiting for instruction
             reg_write_ex    <= 1'b0;
@@ -712,6 +757,7 @@ module kv32_core
             mem_write_ex    <= 1'b0;
             branch_ex       <= 1'b0;
             jump_ex         <= 1'b0;
+            is_jalr_ex      <= 1'b0;
             lui_ex          <= 1'b0;
             auipc_ex        <= 1'b0;
             alu_op_valid_ex <= 1'b0;
@@ -722,6 +768,7 @@ module kv32_core
             illegal_ex      <= 1'b0;
             is_ecall_ex     <= 1'b0;
             is_ebreak_ex    <= 1'b0;
+            instr_valid_ex  <= 1'b0;        // Bubble inserted
         end else begin
             pc_ex           <= pc_id;
             instr_ex        <= instr_id;
@@ -738,6 +785,7 @@ module kv32_core
             reg_write_ex    <= reg_write_id;
             branch_ex       <= branch_id;
             jump_ex         <= jump_id;
+            is_jalr_ex      <= is_jalr_id;
             illegal_ex      <= illegal_id;
             lui_ex          <= lui_id;
             auipc_ex        <= auipc_id;
@@ -748,6 +796,7 @@ module kv32_core
             use_zimm_ex     <= use_zimm_id;
             is_ecall_ex     <= is_ecall_id;
             is_ebreak_ex    <= is_ebreak_id;
+            instr_valid_ex  <= instr_valid_id;
         end
     end
 
@@ -764,12 +813,14 @@ module kv32_core
             mem_size_mem  <= 2'b00;
             funct3_mem    <= 3'b000;
             mem_be_mem    <= 4'h0;
+            instr_valid_mem <= 1'b0;
         end else if (trap_taken) begin
             // Trap squashes the faulting instruction — insert bubble
             mem_read_mem  <= 1'b0;
             mem_write_mem <= 1'b0;
             reg_write_mem <= 1'b0;
             rd_mem        <= 5'h0;
+            instr_valid_mem <= 1'b0;     // Faulting instruction does not retire
         end else if (!mem_stall) begin
             pc_mem        <= pc_ex;
             rd_mem        <= rd_ex;
@@ -778,6 +829,7 @@ module kv32_core
             reg_write_mem <= reg_write_ex;
             mem_addr_mem  <= ex_result;
             funct3_mem    <= funct3_ex;
+            instr_valid_mem <= instr_valid_ex;
 
             // Position write data and calculate byte enables for sub-word stores
             case (funct3_ex[1:0])
@@ -826,13 +878,15 @@ module kv32_core
     // MEM/WB pipeline register
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            rd_wb        <= 5'h0;
-            reg_write_wb <= 1'b0;
-            wb_data      <= 32'h0;
+            rd_wb          <= 5'h0;
+            reg_write_wb   <= 1'b0;
+            wb_data        <= 32'h0;
+            instr_valid_wb <= 1'b0;
         end else if (!mem_stall) begin
-            rd_wb        <= rd_mem;
-            reg_write_wb <= reg_write_mem;
-            wb_data      <= mem_result;
+            rd_wb          <= rd_mem;
+            reg_write_wb   <= reg_write_mem;
+            wb_data        <= mem_result;
+            instr_valid_wb <= instr_valid_mem;
         end
     end
 
@@ -852,6 +906,10 @@ module kv32_core
         .trap_pc      (trap_pc),
         .trap_cause   (trap_cause),
         .trap_val     (trap_val),
+        // MRET: gated by !mem_stall so a stalled MRET doesn't fire
+        // repeatedly. Load-use bubbles clear is_mret_ex via the ID/EX
+        // register, so no extra gate is needed for that path. See the
+        // csr_wen_gated comment above for the same reasoning.
         .mret_taken   (is_mret_ex && !mem_stall),
         .mtvec_out    (mtvec_out),
         .mepc_out     (mepc_out),

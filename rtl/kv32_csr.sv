@@ -53,25 +53,23 @@ module kv32_csr
     localparam logic [11:0] CSR_MCAUSE     = 12'h342;
     localparam logic [11:0] CSR_MTVAL      = 12'h343;
     localparam logic [11:0] CSR_MIP        = 12'h344;
+    localparam logic [11:0] CSR_MVENDORID  = 12'hF11;
+    localparam logic [11:0] CSR_MARCHID    = 12'hF12;
+    localparam logic [11:0] CSR_MIMPID     = 12'hF13;
+    localparam logic [11:0] CSR_MHARTID    = 12'hF14;
+    localparam logic [11:0] CSR_MCONFIGPTR = 12'hF15;
     localparam logic [11:0] CSR_MCYCLE     = 12'hB00;
     localparam logic [11:0] CSR_MINSTRET   = 12'hB02;
     localparam logic [11:0] CSR_MCYCLEH    = 12'hB80;
     localparam logic [11:0] CSR_MINSTRETH  = 12'hB82;
 
     // -------------------------------------------------------------------------
-    // misa fixed value: MXL=01(32-bit), Extensions=IMAFDCSU
-    // Bits: I=8, M=12, A=0, F=5, D=3, C=2, S=18, U=20
+    // misa fixed value: MXL=01 (32-bit).
+    // Phase 1: only the I extension is implemented.
+    // Extensions bitmap (bits [25:0]): A=0, C=2, D=3, F=5, I=8, M=12, S=18, U=20.
+    // Update this value as each extension lands.
     // -------------------------------------------------------------------------
-    localparam logic [31:0] MISA_VAL = {
-        2'b01,           // MXL = 01 (32-bit)
-        4'b0000,         // reserved
-        26'b00000001000100101101000101  // IMAFDCSU bits set
-    };
-    // Bit positions in extensions field (bits 25:0):
-    //   A=0, C=2, D=3, F=5, I=8, M=12, S=18, U=20
-    // 26'b00_0000_0001_0000_1001_0010_0101 = 0x10_9125? let us be explicit:
-    // bit0=A=1, bit2=C=1, bit3=D=1, bit5=F=1, bit8=I=1, bit12=M=1, bit18=S=1, bit20=U=1
-    // = 26'b00_0001_0100_0001_0000_0010_0111 (recount)
+    localparam logic [31:0] MISA_VAL = {2'b01, 4'b0000, 26'b00_0000_0000_0001_0000_0000_0000};
 
     // -------------------------------------------------------------------------
     // CSR storage registers
@@ -140,6 +138,12 @@ module kv32_csr
             CSR_MCAUSE:     csr_rdata = mcause_r;
             CSR_MTVAL:      csr_rdata = mtval_r;
             CSR_MIP:        csr_rdata = mip_rval;
+            // Identity CSRs — read-only, return 0 for this soft core
+            CSR_MVENDORID:  csr_rdata = 32'h0;   // No commercial vendor
+            CSR_MARCHID:    csr_rdata = 32'h0;   // No official architecture ID
+            CSR_MIMPID:     csr_rdata = 32'h0;   // No implementation ID
+            CSR_MHARTID:    csr_rdata = 32'h0;   // Single-hart: always hart 0
+            CSR_MCONFIGPTR: csr_rdata = 32'h0;   // No configuration table
             CSR_MCYCLE:     csr_rdata = mcycle_r[31:0];
             CSR_MCYCLEH:    csr_rdata = mcycle_r[63:32];
             CSR_MINSTRET:   csr_rdata = minstret_r[31:0];
@@ -184,7 +188,16 @@ module kv32_csr
             minstret_r    <= 64'h0;
         end else begin
             // ------------------------------------------------------------------
-            // Counters (always increment)
+            // Counters (always increment, structurally outside the
+            // trap_taken > mret_taken > csr_wen priority chain below).
+            //   - mcycle_r: increments every cycle (correct by definition).
+            //   - minstret_r: increments when instr_retired is high.
+            //     On a trap, the faulting instruction's WB slot is squashed
+            //     (EX/MEM register cleared in kv32_core.sv), so
+            //     instr_retired is low that cycle and the trapping
+            //     instruction does NOT count toward minstret. This is the
+            //     RISC-V-preferred behavior: a trapping instruction is not
+            //     considered retired.
             // ------------------------------------------------------------------
             mcycle_r <= mcycle_r + 64'h1;
 
@@ -224,7 +237,10 @@ module kv32_csr
                     CSR_MIE:
                         mie_r <= csr_new_val(mie_r, csr_op, csr_wdata);
                     CSR_MTVEC:
-                        mtvec_r <= csr_new_val(mtvec_r, csr_op, csr_wdata);
+                        // MODE field [1:0] forced to 0 (Direct-only).
+                        // Vectored mode (MODE=1) is not yet supported;
+                        // implement when async interrupt-taking is added (Phase 5).
+                        mtvec_r <= {csr_new_val(mtvec_r, csr_op, csr_wdata)[31:2], 2'b00};
                     CSR_MCOUNTEREN:
                         mcounteren_r <= csr_new_val(mcounteren_r, csr_op, csr_wdata);
                     CSR_MSTATUSH: ; // All zeros, no big-endian — ignore write
@@ -237,6 +253,11 @@ module kv32_csr
                     CSR_MTVAL:
                         mtval_r <= csr_new_val(mtval_r, csr_op, csr_wdata);
                     CSR_MIP: ; // Hardware-driven bits, writes ignored
+                    CSR_MVENDORID: ; // Read-only, ignore write
+                    CSR_MARCHID:   ; // Read-only, ignore write
+                    CSR_MIMPID:    ; // Read-only, ignore write
+                    CSR_MHARTID:   ; // Read-only, ignore write
+                    CSR_MCONFIGPTR: ; // Read-only, ignore write
                     CSR_MCYCLE:
                         mcycle_r[31:0] <= csr_new_val(mcycle_r[31:0], csr_op, csr_wdata);
                     CSR_MCYCLEH:

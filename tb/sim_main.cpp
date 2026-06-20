@@ -352,16 +352,44 @@ static void reset(Vkv32_core* top, VerilatedVcdC* tfp) {
 }
 
 // Memory responder: implements req/gnt/valid protocol
+// When mem_latency=0, behaves as zero-latency (combinational gnt+valid).
+// When mem_latency>0, grants combinationally but delays mem_valid by
+// N cycles, exercising the arbiter's D_PORT_ACTIVE hold, the
+// misalignment handler's MA_WAIT state, and pipeline mem_stall paths.
+//
+// mem_valid is a level signal (high after latency expires, while mem_req
+// stays high). New transactions are detected by address change, since
+// the i-port keeps mem_req continuously high.
 static struct MemState {
     uint32_t rdata;
     bool     gnt_reg;
     bool     valid_reg;
 } mem;
 
-static void mem_responder(Vkv32_core* top) {
-    mem.gnt_reg = top->mem_req;
+static int      mem_latency    = 0;       // cycles between gnt and valid (0 = combinational)
+static int      latency_count  = 0;       // countdown timer for in-flight transaction
+static bool     mem_pending    = false;   // transaction in flight (latency counting or valid asserted)
+static uint32_t txn_addr       = 0xFFFFFFFF; // address of the current transaction
+static bool     txn_we         = false;      // write-enable of the current transaction
 
-    if (top->mem_req && mem.gnt_reg) {
+static void mem_responder(Vkv32_core* top) {
+    // Combinational grant — slave accepts immediately
+    top->mem_gnt = top->mem_req;
+
+    // Detect start of new transaction: req high, gnt high, and either
+    // no transaction pending, or the address changed, or the transaction
+    // type changed (write→read or read→write at the same address —
+    // happens when a store is immediately followed by a load from the
+    // same address, with no i-port fetch in between).
+    bool new_txn = top->mem_req && top->mem_gnt &&
+                   (!mem_pending || top->mem_addr != txn_addr ||
+                    top->mem_we != txn_we);
+
+    if (new_txn) {
+        mem_pending   = true;
+        latency_count = mem_latency;
+        txn_addr      = top->mem_addr;
+        txn_we        = top->mem_we;
         if (top->mem_we) {
             bram_write(top->mem_addr, top->mem_wdata, top->mem_be);
         } else {
@@ -369,10 +397,20 @@ static void mem_responder(Vkv32_core* top) {
         }
     }
 
-    mem.valid_reg = top->mem_req && mem.gnt_reg;
+    // Drive mem_valid after latency expires (level signal while req is high)
+    if (mem_pending) {
+        if (latency_count > 0) {
+            latency_count--;
+            top->mem_valid = 0;
+        } else {
+            top->mem_valid = top->mem_req;
+        }
+        // Clear pending if req drops (arbiter returned to IDLE with no new request)
+        if (!top->mem_req) mem_pending = false;
+    } else {
+        top->mem_valid = 0;
+    }
 
-    top->mem_gnt   = mem.gnt_reg;
-    top->mem_valid = mem.valid_reg;
     top->mem_rdata = mem.rdata;
     top->mem_err   = 0;
 }
@@ -418,12 +456,12 @@ static void run_and_check(Vkv32_core* top, VerilatedVcdC* tfp,
 // Returns: 0=pass, 1=fail, 2=timeout
 static int run_riscv_test(Vkv32_core* top, VerilatedVcdC* tfp,
                           uint32_t tohost_addr, int max_cycles) {
-    bool debug = (getenv("KV32_DEBUG_MA") != nullptr);
+    bool debug_ma = (getenv("KV32_DEBUG_MA") != nullptr);
     for (int i = 0; i < max_cycles; i++) {
         mem_responder(top);
         tick(top, tfp);
 
-        if (debug && i >= 436 && i <= 460) {
+        if (debug_ma && i >= 436 && i <= 460) {
             uint32_t w0 = bram_read(0x80002000);
             uint32_t w1 = bram_read(0x80002004);
             auto r = top->rootp;
@@ -495,6 +533,9 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--tohost") == 0 && i + 1 < argc) {
             tohost_addr = (uint32_t)strtoul(argv[++i], nullptr, 0);
             tohost_set  = true;
+        } else if (strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
+            mem_latency = atoi(argv[++i]);
+            if (mem_latency < 0) mem_latency = 0;
         }
     }
 
@@ -510,11 +551,20 @@ int main(int argc, char** argv) {
     top->clk = 0;
     top->rst_n = 0;
     top->irq_external_i = 0;
+    top->irq_timer_i    = 0;
+    top->irq_software_i = 0;
     top->mem_gnt = 0;
     top->mem_valid = 0;
     top->mem_rdata = 0;
     top->mem_err = 0;
     mem = {0, false, false};
+    mem_pending    = false;
+    latency_count  = 0;
+    txn_addr       = 0xFFFFFFFF;
+    txn_we         = false;
+
+    if (mem_latency > 0)
+        printf("Memory latency: %d cycles\n", mem_latency);
 
     if (binary_path) {
         // ---- riscv-tests mode ----
