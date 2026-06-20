@@ -130,7 +130,7 @@ tb/           Testbenches
   sim_main.cpp        Verilator C++ test driver
 tests/        External test suites
   riscv-tests/        riscv-tests submodule
-docs/         Phase status and summary notes
+docs/         Topic-oriented implementation docs (pipeline, decoder, memory, csr, traps, verification)
 ```
 
 ## Roadmap
