@@ -331,6 +331,12 @@ int main() {
       Exp e = fields(i); e.alu_op_valid=true; e.reg_write=true; e.illegal=true;
       check(d, "illegal SLL funct7", i, e); }
 
+    // SLLI requires imm[11:5] / funct7 to be zero in RV32I.
+    { uint32_t i = i_type(0x204, 2, 1, 1, OpImm);
+      Exp e = fields(i); e.imm=0x204; e.use_imm=true;
+      e.alu_op_valid=true; e.reg_write=true; e.illegal=true;
+      check(d, "illegal SLLI funct7", i, e); }
+
     // ---- Invalid funct3 encodings (now decode as illegal) ----
     // Branch funct3 010/011 are reserved. Control signals still set
     // (branch=1) plus illegal=1; pipeline suppresses execution on illegal.
@@ -373,6 +379,20 @@ int main() {
     { uint32_t i = i_type(0, 0, 2, 0, OpMiscMem);
       Exp e = fields(i); e.illegal=true;
       check(d, "illegal MISC-MEM funct3=010", i, e); }
+
+    // ECALL/EBREAK/MRET require rd=x0 and rs1=x0.
+    { uint32_t i = i_type(0x000, 0, 0, 1, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal ECALL rd", i, e); }
+    { uint32_t i = i_type(0x001, 1, 0, 0, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal EBREAK rs1", i, e); }
+    { uint32_t i = i_type(0x302, 0, 0, 1, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal MRET rd", i, e); }
+    { uint32_t i = i_type(0x302, 1, 0, 0, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal MRET rs1", i, e); }
 
     // FENCE.I (funct3=001) is a valid NOP in this pipeline.
     { Exp e = fields(0x0000100F); check(d, "FENCE.I valid NOP", 0x0000100F, e); }

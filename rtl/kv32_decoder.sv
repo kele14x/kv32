@@ -185,7 +185,13 @@ module kv32_decoder
 
         unique case (funct3)
           3'b000:  alu_op = AluAdd;  // ADDI
-          3'b001:  alu_op = AluSll;  // SLLI
+          3'b001: begin
+            if (funct7 == 7'b0000000) begin
+              alu_op = AluSll;  // SLLI
+            end else begin
+              illegal = 1'b1;
+            end
+          end
           3'b010:  alu_op = AluSlt;  // SLTI
           3'b011:  alu_op = AluSltu;  // SLTIU
           3'b100:  alu_op = AluXor;  // XORI
@@ -339,13 +345,18 @@ module kv32_decoder
             reg_write = 1'b1;
           end
           3'b000: begin
-            // System instructions (ECALL/EBREAK/MRET)
-            unique case (instr[31:20])
-              12'h000: is_ecall = 1'b1;
-              12'h001: is_ebreak = 1'b1;
-              12'h302: is_mret = 1'b1;
-              default: illegal = 1'b1;
-            endcase
+            // System instructions (ECALL/EBREAK/MRET). rd and rs1
+            // are reserved and must be x0 for these encodings.
+            if (rd != 5'h0 || rs1 != 5'h0) begin
+              illegal = 1'b1;
+            end else begin
+              unique case (instr[31:20])
+                12'h000: is_ecall = 1'b1;
+                12'h001: is_ebreak = 1'b1;
+                12'h302: is_mret = 1'b1;
+                default: illegal = 1'b1;
+              endcase
+            end
           end
           default: illegal = 1'b1;
         endcase
