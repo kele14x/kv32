@@ -7,18 +7,29 @@ module kv32_core
     input logic irq_timer_i,
     input logic irq_software_i,
 
-    // External memory interface
-    output logic        mem_req,
-    output logic [31:0] mem_addr,
-    output logic        mem_we,
-    output logic [ 1:0] mem_size,
-    output logic [31:0] mem_wdata,
-    output logic [ 3:0] mem_be,
-    output logic        mem_excl,
-    input  logic        mem_gnt,
-    input  logic        mem_valid,
-    input  logic [31:0] mem_rdata,
-    input  logic        mem_err
+    // Instruction memory interface (req/ack protocol)
+    output logic        imem_req,
+    output logic [31:0] imem_addr,
+    output logic        imem_we,
+    output logic [ 1:0] imem_size,
+    output logic [31:0] imem_wdata,
+    output logic [ 3:0] imem_be,
+    output logic        imem_excl,
+    input  logic        imem_ack,
+    input  logic [31:0] imem_rdata,
+    input  logic        imem_err,
+
+    // Data memory interface (req/ack protocol, through kv32_mem_fe)
+    output logic        dmem_req,
+    output logic [31:0] dmem_addr,
+    output logic        dmem_we,
+    output logic [ 1:0] dmem_size,
+    output logic [31:0] dmem_wdata,
+    output logic [ 3:0] dmem_be,
+    output logic        dmem_excl,
+    input  logic        dmem_ack,
+    input  logic [31:0] dmem_rdata,
+    input  logic        dmem_err
 );
 
   // Internal memory ports
@@ -27,66 +38,57 @@ module kv32_core
   logic        d_we;
   logic [ 1:0] d_size;
   logic [31:0] d_wdata;
-  logic [ 3:0] d_be;
-  logic        d_excl;
+  logic i_valid;
+  logic [31:0] i_rdata;
 
-  // Grant signals reserved for future pipeline optimizations
-  // verilator lint_off UNUSEDSIGNAL
-  logic i_gnt, d_gnt;
-  // verilator lint_on UNUSEDSIGNAL
-  logic i_valid, d_valid;
-  logic [31:0] i_rdata, d_rdata;
-  logic arb_idle;
-
-  // Arbiter-facing signals (modified by misaligned access handler)
-  logic d_req_a, d_we_a;
-  logic [31:0] d_addr_a, d_wdata_a;
-  logic [ 1:0] d_size_a;
-  logic [ 3:0] d_be_a;
-  logic        d_excl_a;
-  logic        d_valid_a;
-  logic [31:0] d_rdata_a;
   // Error signals reserved for exception handling (Phase 5)
   // verilator lint_off UNUSEDSIGNAL
-  logic i_err, d_err;
+  logic i_err;
   // verilator lint_on UNUSEDSIGNAL
 
-  // Memory arbiter
-  kv32_mem_arbiter u_arbiter (
-      .clk  (clk),
-      .rst_n(rst_n),
+  // Memory front-end outputs
+  logic [31:0] fe_rdata;
+  logic        fe_rdata_valid;
+  // verilator lint_off UNUSEDSIGNAL
+  logic        fe_err;
+  // verilator lint_on UNUSEDSIGNAL
 
-      .i_req  (i_req),
-      .i_addr (i_addr),
-      .i_gnt  (i_gnt),
-      .i_valid(i_valid),
-      .i_rdata(i_rdata),
-      .i_err  (i_err),
+  // Instruction memory: direct passthrough from IF stage
+  assign imem_req   = i_req;
+  assign imem_addr  = i_addr;
+  assign imem_we    = 1'b0;
+  assign imem_size  = 2'b10;       // always word
+  assign imem_wdata = 32'h0;
+  assign imem_be    = 4'hF;
+  assign imem_excl  = 1'b0;
+  assign i_valid    = imem_ack;
+  assign i_rdata    = imem_rdata;
+  assign i_err      = imem_err;
 
-      .d_req  (d_req_a),
-      .d_addr (d_addr_a),
-      .d_we   (d_we_a),
-      .d_size (d_size_a),
-      .d_wdata(d_wdata_a),
-      .d_be   (d_be_a),
-      .d_excl (d_excl_a),
-      .d_gnt  (d_gnt),
-      .d_valid(d_valid_a),
-      .d_rdata(d_rdata_a),
-      .d_err  (d_err),
-
-      .mem_req  (mem_req),
-      .mem_addr (mem_addr),
-      .mem_we   (mem_we),
-      .mem_size (mem_size),
-      .mem_wdata(mem_wdata),
-      .mem_be   (mem_be),
-      .mem_excl (mem_excl),
-      .mem_gnt  (mem_gnt),
-      .mem_valid(mem_valid),
-      .mem_rdata(mem_rdata),
-      .mem_err  (mem_err),
-      .arb_idle (arb_idle)
+  // Data memory front-end: handles alignment, sub-word positioning,
+  // load extraction, and misaligned access splitting.
+  kv32_mem_fe u_mem_fe (
+      .clk         (clk),
+      .rst_n       (rst_n),
+      .req         (d_req),
+      .addr        (d_addr),
+      .we          (d_we),
+      .size        (d_size),
+      .wdata       (d_wdata),
+      .funct3      (funct3_mem),
+      .rdata       (fe_rdata),
+      .rdata_valid (fe_rdata_valid),
+      .err         (fe_err),
+      .dmem_req    (dmem_req),
+      .dmem_addr   (dmem_addr),
+      .dmem_we     (dmem_we),
+      .dmem_size   (dmem_size),
+      .dmem_wdata  (dmem_wdata),
+      .dmem_be     (dmem_be),
+      .dmem_excl   (dmem_excl),
+      .dmem_ack    (dmem_ack),
+      .dmem_rdata  (dmem_rdata),
+      .dmem_err    (dmem_err)
   );
 
   // Pipeline registers
@@ -324,7 +326,6 @@ module kv32_core
   logic [31:0] mem_wdata_mem, mem_addr_mem;
   logic [ 1:0] mem_size_mem;
   logic [ 2:0] funct3_mem;
-  logic [ 3:0] mem_be_mem;
   logic [31:0] mem_result;
 
   always_comb begin
@@ -333,305 +334,11 @@ module kv32_core
     d_we    = mem_write_mem;
     d_size  = mem_size_mem;
     d_wdata = mem_wdata_mem;
-    d_be    = mem_be_mem;
-    d_excl  = 1'b0;
 
-    // Default: ALU result for non-load instructions
-    mem_result = mem_addr_mem;
-
-    // For loads, extract and extend the correct bytes
-    if (mem_read_mem && d_valid) begin
-      case (funct3_mem)
-        3'b000: begin  // LB - load byte, sign-extend
-          unique case (mem_addr_mem[1:0])
-            2'b00: mem_result = {{24{d_rdata[7]}}, d_rdata[7:0]};
-            2'b01: mem_result = {{24{d_rdata[15]}}, d_rdata[15:8]};
-            2'b10: mem_result = {{24{d_rdata[23]}}, d_rdata[23:16]};
-            2'b11: mem_result = {{24{d_rdata[31]}}, d_rdata[31:24]};
-          endcase
-        end
-        3'b001: begin  // LH - load halfword, sign-extend
-          unique case (mem_addr_mem[1])
-            1'b0: mem_result = {{16{d_rdata[15]}}, d_rdata[15:0]};
-            1'b1: mem_result = {{16{d_rdata[31]}}, d_rdata[31:16]};
-          endcase
-        end
-        3'b010: begin  // LW - load word
-          mem_result = d_rdata;
-        end
-        3'b100: begin  // LBU - load byte, zero-extend
-          unique case (mem_addr_mem[1:0])
-            2'b00: mem_result = {24'h0, d_rdata[7:0]};
-            2'b01: mem_result = {24'h0, d_rdata[15:8]};
-            2'b10: mem_result = {24'h0, d_rdata[23:16]};
-            2'b11: mem_result = {24'h0, d_rdata[31:24]};
-          endcase
-        end
-        3'b101: begin  // LHU - load halfword, zero-extend
-          unique case (mem_addr_mem[1])
-            1'b0: mem_result = {16'h0, d_rdata[15:0]};
-            1'b1: mem_result = {16'h0, d_rdata[31:16]};
-          endcase
-        end
-        default: mem_result = d_rdata;
-      endcase
-    end
+    // mem_result: load data from mem_fe, or ALU result for non-loads
+    mem_result = mem_read_mem ? fe_rdata : mem_addr_mem;
   end
 
-  // -------------------------------------------------------------------------
-  // Misaligned access handler: splits misaligned loads/stores into two
-  // aligned word accesses. Adds ~4 cycles of latency for misaligned accesses.
-  //
-  // Non-crossing case (SH at offset 1): both bytes fit in one word,
-  // handled inline without the state machine.
-  // -------------------------------------------------------------------------
-  typedef enum logic [2:0] {
-    MA_IDLE,
-    MA_FIRST,   // First access in flight (arbiter D_PORT_ACTIVE)
-    MA_DRAIN,   // First access done; 1-cycle drain to let arbiter
-                // return to IDLE. (MA_SECOND below re-checks
-                // arb_idle as a safety net for slaves that hold
-                // mem_valid for >1 cycle.)
-    MA_SECOND,  // Second access being driven (arbiter IDLE → latch → D_PORT_ACTIVE)
-    MA_HOLD     // Second access in flight (d_valid suppressed until done)
-  } ma_state_t;
-
-  // verilator lint_off UNUSEDSIGNAL
-  ma_state_t ma_state;
-  logic [31:0] ma_first_rdata;
-  logic [1:0] ma_offset;
-  logic [1:0] ma_size;
-  // verilator lint_on UNUSEDSIGNAL
-
-  // Misalignment detection.
-  // non_crossing_ma is only ever set for the SH@addr[1:0]=01 case (a
-  // halfword store straddling bytes 1-2 of a single word). Any other
-  // misaligned access either crosses a word boundary (word_crossing)
-  // or is naturally aligned. The load-side shift below relies on this
-  // exact-case assumption — do not generalize without revisiting that
-  // shift logic.
-  logic word_crossing;
-  logic non_crossing_ma;
-  always_comb begin
-    word_crossing   = 1'b0;
-    non_crossing_ma = 1'b0;
-    if (d_req && ma_state == MA_IDLE) begin
-      if (d_size == 2'b01 && d_addr[0]) begin
-        if (d_addr[1]) word_crossing = 1'b1;
-        else non_crossing_ma = 1'b1;
-      end else if (d_size == 2'b10 && d_addr[1:0] != 2'b00) begin
-        word_crossing = 1'b1;
-      end
-    end
-  end
-
-  // Extract raw halfword from pipeline-positioned d_wdata
-  // Pipeline register places halfword in bytes 0,1 (addr[1]=0) or bytes 2,3 (addr[1]=1)
-  logic [15:0] raw_hw;
-  assign raw_hw = d_addr[1] ? d_wdata[31:16] : d_wdata[15:0];
-
-  // Helper: compute first-access byte enables and write data (crossing case)
-  logic [ 3:0] first_be;
-  logic [31:0] first_wdata;
-  always_comb begin
-    first_be    = d_be;
-    first_wdata = d_wdata;
-    if (d_size == 2'b01) begin
-      // SH crossing (offset 3 only): low byte to byte 3
-      first_be    = 4'b1000;
-      first_wdata = {raw_hw[7:0], 24'h0};
-    end else begin
-      // SW crossing
-      unique case (d_addr[1:0])
-        2'b01: begin
-          first_be = 4'b1110;
-          first_wdata = {d_wdata[23:0], 8'h0};
-        end
-        2'b10: begin
-          first_be = 4'b1100;
-          first_wdata = {d_wdata[15:0], 16'h0};
-        end
-        2'b11: begin
-          first_be = 4'b1000;
-          first_wdata = {d_wdata[7:0], 24'h0};
-        end
-        default: begin
-          first_be = 4'b1111;
-          first_wdata = d_wdata;
-        end
-      endcase
-    end
-  end
-
-  // Helper: compute second-access byte enables and write data (crossing case)
-  logic [ 3:0] second_be;
-  logic [31:0] second_wdata;
-  always_comb begin
-    second_be    = 4'b1111;
-    second_wdata = d_wdata;
-    if (d_we) begin
-      if (ma_size == 2'b01) begin
-        // SH crossing (offset 3): high byte to byte 0 of second word
-        second_wdata = {24'h0, raw_hw[15:8]};
-        second_be    = 4'b0001;
-      end else begin
-        // SW: remaining bytes go to low positions of second word
-        unique case (ma_offset)
-          2'b01: begin
-            second_wdata = {24'h0, d_wdata[31:24]};
-            second_be = 4'b0001;
-          end
-          2'b10: begin
-            second_wdata = {16'h0, d_wdata[31:16]};
-            second_be = 4'b0011;
-          end
-          2'b11: begin
-            second_wdata = {8'h0, d_wdata[31:8]};
-            second_be = 4'b0111;
-          end
-          default: begin
-            second_wdata = d_wdata;
-            second_be = 4'b1111;
-          end
-        endcase
-      end
-    end
-  end
-
-  // Alignment handler state machine
-  always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      ma_state       <= MA_IDLE;
-      ma_first_rdata <= 32'h0;
-      ma_offset      <= 2'b00;
-      ma_size        <= 2'b00;
-    end else begin
-      unique case (ma_state)
-        MA_IDLE: begin
-          if (word_crossing) begin
-            ma_state  <= MA_FIRST;
-            ma_offset <= d_addr[1:0];
-            ma_size   <= d_size;
-          end
-        end
-        MA_FIRST: begin
-          if (d_valid_a) begin
-            ma_state       <= MA_DRAIN;
-            ma_first_rdata <= d_rdata_a;
-          end
-        end
-        MA_DRAIN: begin
-          ma_state <= MA_SECOND;
-        end
-        MA_SECOND: begin
-          if (arb_idle) begin
-            ma_state <= MA_HOLD;
-          end
-        end
-        MA_HOLD: begin
-          if (d_valid_a) begin
-            ma_state <= MA_IDLE;
-          end
-        end
-        default: ma_state <= MA_IDLE;
-      endcase
-    end
-  end
-
-  // Arbiter-facing d-port signals (with alignment handling)
-  always_comb begin
-    // Default: pass through
-    d_req_a   = d_req;
-    d_addr_a  = d_addr;
-    d_we_a    = d_we;
-    d_size_a  = d_size;
-    d_wdata_a = d_wdata;
-    d_be_a    = d_be;
-    d_excl_a  = d_excl;
-
-    unique case (ma_state)
-      MA_IDLE: begin
-        if (non_crossing_ma) begin
-          // SH at offset 1: both bytes in same word, no splitting
-          d_addr_a = {d_addr[31:2], 2'b00};
-          d_be_a   = 4'b0110;
-          if (d_we) d_wdata_a = {d_wdata[23:0], 8'h0};
-        end else if (word_crossing) begin
-          d_req_a  = 1'b0;
-          d_addr_a = {d_addr[31:2], 2'b00};
-          d_be_a   = first_be;
-          if (d_we) d_wdata_a = first_wdata;
-        end
-      end
-
-      MA_FIRST: begin
-        d_req_a  = d_req;
-        d_addr_a = {d_addr[31:2], 2'b00};
-        d_be_a   = first_be;
-        if (d_we) d_wdata_a = first_wdata;
-      end
-
-      MA_DRAIN: begin
-        // Suppress d_req while arbiter drains back to IDLE.
-        // Latched first-access signals held for stability.
-        d_req_a  = 1'b0;
-        d_addr_a = {d_addr[31:2], 2'b00};
-        d_be_a   = first_be;
-        if (d_we) d_wdata_a = first_wdata;
-      end
-
-      MA_SECOND: begin
-        d_addr_a  = {d_addr[31:2], 2'b00} + 32'd4;
-        d_wdata_a = second_wdata;
-        d_be_a    = second_be;
-      end
-
-      MA_HOLD: begin
-        d_addr_a  = {d_addr[31:2], 2'b00} + 32'd4;
-        d_wdata_a = second_wdata;
-        d_be_a    = second_be;
-      end
-
-      default: ;
-    endcase
-  end
-
-  // Combine misaligned load data from two word reads
-  always_comb begin
-    d_valid = d_valid_a;
-    d_rdata = d_rdata_a;
-
-    if (ma_state != MA_IDLE) begin
-      d_valid = 1'b0;
-    end
-
-    if (ma_state == MA_HOLD && d_valid_a) begin
-      d_valid = 1'b1;
-      unique case (ma_size)
-        2'b01: begin  // Halfword (offset 3 only)
-          d_rdata = {d_rdata_a[7:0], ma_first_rdata[31:24], 16'h0};
-        end
-        2'b10: begin  // Word
-          unique case (ma_offset)
-            2'b01:   d_rdata = {d_rdata_a[7:0], ma_first_rdata[31:8]};
-            2'b10:   d_rdata = {d_rdata_a[15:0], ma_first_rdata[31:16]};
-            2'b11:   d_rdata = {d_rdata_a[23:0], ma_first_rdata[31:24]};
-            default: d_rdata = d_rdata_a;
-          endcase
-        end
-        default: d_rdata = d_rdata_a;
-      endcase
-    end
-
-    // Non-crossing misaligned load: only SH@addr[1:0]=01 reaches here
-    // (see non_crossing_ma detector above). Shift rdata right by 8 so
-    // the existing LH extractor (which keys on mem_addr_mem[1]=0)
-    // picks up bytes 1,2 of the word as the low halfword. Any other
-    // non-crossing case is naturally aligned and bypasses this path.
-    if (non_crossing_ma && !d_we && d_valid_a) begin
-      d_rdata = {8'h0, d_rdata_a[31:8]};
-    end
-  end
 
   // WB stage
   logic [ 4:0] rd_wb;
@@ -673,7 +380,7 @@ module kv32_core
   assign if_wait = i_req && !i_valid;
 
   // MEM stalls when waiting for data memory response
-  assign mem_stall = (mem_read_mem || mem_write_mem) && !d_valid;
+  assign mem_stall = (mem_read_mem || mem_write_mem) && !fe_rdata_valid;
 
   // Backpressure: mem_stall propagates to all earlier stages
   assign ex_stall = mem_stall;
@@ -842,7 +549,6 @@ module kv32_core
       mem_wdata_mem   <= 32'h0;
       mem_size_mem    <= 2'b00;
       funct3_mem      <= 3'b000;
-      mem_be_mem      <= 4'h0;
       instr_valid_mem <= 1'b0;
     end else if (trap_taken) begin
       // Trap squashes the faulting instruction — insert bubble
@@ -861,47 +567,9 @@ module kv32_core
       funct3_mem      <= funct3_ex;
       instr_valid_mem <= instr_valid_ex;
 
-      // Position write data and calculate byte enables for sub-word stores
-      case (funct3_ex[1:0])
-        2'b00: begin  // SB - store byte
-          unique case (ex_result[1:0])
-            2'b00: begin
-              mem_wdata_mem <= {24'h0, fwd_b[7:0]};
-              mem_be_mem    <= 4'b0001;
-            end
-            2'b01: begin
-              mem_wdata_mem <= {16'h0, fwd_b[7:0], 8'h0};
-              mem_be_mem    <= 4'b0010;
-            end
-            2'b10: begin
-              mem_wdata_mem <= {8'h0, fwd_b[7:0], 16'h0};
-              mem_be_mem    <= 4'b0100;
-            end
-            2'b11: begin
-              mem_wdata_mem <= {fwd_b[7:0], 24'h0};
-              mem_be_mem    <= 4'b1000;
-            end
-          endcase
-        end
-        2'b01: begin  // SH - store halfword
-          unique case (ex_result[1])
-            1'b0: begin
-              mem_wdata_mem <= {16'h0, fwd_b[15:0]};
-              mem_be_mem    <= 4'b0011;
-            end
-            1'b1: begin
-              mem_wdata_mem <= {fwd_b[15:0], 16'h0};
-              mem_be_mem    <= 4'b1100;
-            end
-          endcase
-        end
-        default: begin  // SW - store word
-          mem_wdata_mem <= fwd_b;
-          mem_be_mem    <= 4'b1111;
-        end
-      endcase
-
-      mem_size_mem <= funct3_ex[1:0];  // Load/store size from EX stage
+      // Pass raw rs2 to mem_fe — sub-word positioning is handled there
+      mem_wdata_mem <= fwd_b;
+      mem_size_mem  <= funct3_ex[1:0];  // Load/store size from EX stage
     end
   end
 

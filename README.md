@@ -100,9 +100,9 @@ ls tests/riscv-tests/isa/rv32ui/*.S | xargs -n1 basename -s .S
 The simulator binary accepts an arbitrary ELF (or flat binary) via `--binary`:
 
 ```bash
-./obj_dir/Vkv32_core --binary tests/riscv-tests/isa/rv32ui-p-add
-./obj_dir/Vkv32_core --binary path/to/custom.elf --cycles 100000
-./obj_dir/Vkv32_core --binary path/to/firmware.bin --notrace
+./build/obj_dir/Vkv32_core --binary tests/riscv-tests/isa/rv32ui-p-add
+./build/obj_dir/Vkv32_core --binary path/to/custom.elf --cycles 100000
+./build/obj_dir/Vkv32_core --binary path/to/firmware.bin --notrace
 ```
 
 Options:

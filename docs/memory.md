@@ -1,158 +1,145 @@
 # Memory Subsystem
 
-Implementation of the memory interface, arbiter, sub-word access, and the
-misaligned-access handler. All in `rtl/kv32_core.sv` and
-`rtl/kv32_mem_arbiter.sv`. For the architectural memory interface contract
-(signal list, protocol rules, alignment invariant, AXI adapter plan), see
-[SPEC.md §4](../SPEC.md).
+Implementation of the memory interface, sub-word access, and misaligned-access
+handling. The memory front-end lives in `rtl/kv32_mem_fe.sv`; the core's
+pipeline and dual-port wiring are in `rtl/kv32_core.sv`. For the architectural
+memory interface contract (signal list, alignment invariant, AXI adapter plan),
+see [SPEC.md §4](../SPEC.md).
 
-## Internal vs external ports
+## Dual memory interfaces
 
-The core exposes a single external memory interface (`mem_req`/`mem_addr`/
-`mem_we`/`mem_size`/`mem_wdata`/`mem_be`/`mem_excl` + `mem_gnt`/`mem_valid`/
-`mem_rdata`/`mem_err`, `kv32_core.sv:11-21`). Internally there are two ports:
+The core exposes two independent memory interfaces using a **req/ack** protocol:
 
-- **i-port** — instruction fetch (IF stage), read-only.
-- **d-port** — data load/store (MEM stage) + page-table walks (future).
+- **imem_\*** — instruction fetch (IF stage), read-only, direct passthrough.
+- **dmem_\*** — data load/store (MEM stage), routed through `kv32_mem_fe`.
 
-A misaligned-access handler sits between the MEM stage and the arbiter's d-port,
-producing the `_a`-suffixed signals (`d_req_a`, `d_addr_a`, … `d_valid_a`,
-`d_rdata_a`) consumed by `kv32_mem_arbiter` (`kv32_core.sv:42-90`).
+There is no internal arbiter. At SoC integration time, an external crossbar or
+interconnect fabric arbitrates between the two ports.
 
-## Arbiter
+### req/ack protocol
 
-Three-state FSM in `rtl/kv32_mem_arbiter.sv` (`IDLE`, `D_PORT_ACTIVE`,
-`I_PORT_ACTIVE`, lines 41-45) with **d-port > i-port** priority.
+| Signal | Direction | Meaning |
+|--------|-----------|---------|
+| `req` | Master → Slave | Transaction requested. Master holds `req` high and keeps address/data stable until `ack`. |
+| `ack` | Slave → Master | Transaction complete. For loads, `rdata` is valid on the same cycle as `ack`. |
 
-**Zero-latency handling**: `IDLE` only transitions to `*_ACTIVE` when
-`mem_gnt && !mem_valid` (lines 73-77). If a slave returns `mem_valid` in the
-same cycle as `mem_gnt` (allowed by SPEC §4.2 rule 4 — combinational BRAM
-responder), the whole transaction completes in `IDLE` with no state transition
-and no double-response risk.
+A transaction completes when `req && ack`. Zero-latency slaves (combinational
+BRAM) assert `ack` in the same cycle as `req`, so aligned accesses complete in
+one cycle with no pipeline stall.
 
-**`granted` flag** (lines 52, 109-113): tracks whether the current transaction
-has been accepted. This makes `d_gnt`/`i_gnt` a one-cycle pulse rather than
-re-asserting every cycle while waiting for `mem_valid`.
+### i-port (instruction fetch)
 
-**Latched d-port request** (lines 54-60, 114-122): when a data access is
-accepted out of `IDLE`, `d_addr`/`d_we`/`d_size`/`d_wdata`/`d_be`/`d_excl` are
-latched and held stable in `D_PORT_ACTIVE` (the pipeline may drop `d_req` or
-change `d_addr` while waiting for `mem_valid`). The i-port does not need
-latching — `i_addr` (= `pc_if`) is held stable by the IF stage until `i_valid`.
+The IF stage wires directly to `imem_*` (`kv32_core.sv`):
 
-**Response demux** (lines 207-247): routes `mem_rdata`/`mem_err` to the port
-that owns the transaction. In `IDLE` with a zero-latency response, routing
-follows d-port priority (`d_req && mem_gnt` wins over `i_req && mem_gnt`).
-
-`arb_idle` (line 205) is asserted in `IDLE`; the misaligned-access handler uses
-it as a safety net before issuing its second access.
-
-## Sub-word loads
-
-MEM stage, `kv32_core.sv:323-372`. After `d_valid`, the relevant bytes are
-extracted from `d_rdata` based on `funct3_mem` and the low address bits, then
-sign- or zero-extended:
-
-| `funct3_mem` | Insn | Selection | Extension |
-|--------------|------|-----------|-----------|
-| 000 | LB | `d_rdata[8*offset +: 8]` by `mem_addr_mem[1:0]` | sign |
-| 001 | LH | low/high half by `mem_addr_mem[1]` | sign |
-| 010 | LW | `d_rdata` | — |
-| 100 | LBU | byte by `mem_addr_mem[1:0]` | zero |
-| 101 | LHU | half by `mem_addr_mem[1]` | zero |
-
-For non-load instructions `mem_result` defaults to `mem_addr_mem` (the ALU
-result, already the effective address), so non-memory instructions pass through
-MEM unchanged.
-
-## Sub-word stores
-
-Store data positioning and byte-enable generation happen in the **EX/MEM
-pipeline register** (`kv32_core.sv:838-877`), not in MEM. This uses `fwd_b` (the
-forwarded `rs2`) — not raw `rs2_data` — so a forwarded store value is written
-correctly.
-
-| `funct3_ex[1:0]` | Insn | BE / wdata logic |
-|------------------|------|-------------------|
-| 00 | SB | one byte lane selected by `ex_result[1:0]`; `fwd_b[7:0]` shifted into lane |
-| 01 | SH | two byte lanes selected by `ex_result[1]`; `fwd_b[15:0]` in low or high half |
-| 10 | SW | `mem_be_mem = 4'b1111`, `mem_wdata_mem = fwd_b` |
-
-`mem_size_mem <= funct3_ex[1:0]` (line 878) carries the access size to the
-arbiter/external interface.
-
-## Misaligned access handler
-
-`kv32_core.sv:374-603`. Splits a misaligned load/store that **crosses a word
-boundary** into two aligned word accesses, adding ~4 cycles of latency. This
-implements the "work in hardware via multiple aligned accesses" option from
-SPEC §7.2 rather than trapping to M-mode firmware.
-
-### Misalignment detection
-
-`kv32_core.sv:399-419`. Only evaluated when `d_req && ma_state == MA_IDLE`:
-
-- `word_crossing` — set for `SH` at `addr[1:0]=11` (halfword straddles the word
-  boundary) and any `SW` with `addr[1:0] != 00`. Triggers the two-access FSM.
-- `non_crossing_ma` — set **only** for `SH` at `addr[1:0]=01` (halfword in
-  bytes 1-2 of a single word). Handled inline without the FSM (single access,
-  `d_be = 4'b0110`, address word-aligned).
-
-> **Invariant**: `non_crossing_ma` is *only* the `SH@addr[1:0]=01` case. The
-> load-side shift at `kv32_core.sv:600-602` relies on this exact-case
-> assumption. Do not generalize the detector without revisiting that shift.
-
-### Misalignment state machine
-
-`kv32_core.sv:381-508`. The FSM steps through:
-
-```
-MA_IDLE -> MA_FIRST -> MA_DRAIN -> MA_SECOND -> MA_HOLD -> MA_IDLE
+```systemverilog
+assign imem_req   = i_req;       // from IF stage
+assign imem_addr  = i_addr;      // = pc_if
+assign imem_we    = 1'b0;        // read-only
+assign imem_size  = 2'b10;       // always word
+assign imem_wdata = 32'h0;
+assign imem_be    = 4'hF;
+assign imem_excl  = 1'b0;
+assign i_valid    = imem_ack;
+assign i_rdata    = imem_rdata;
 ```
 
-| State | Action |
-|-------|--------|
-| `MA_IDLE` | detect crossing; if `word_crossing`, latch `ma_offset`/`ma_size`, go `MA_FIRST`. Inline path for `non_crossing_ma`. |
-| `MA_FIRST` | drive first aligned access (low word, `first_be`/`first_wdata`); on `d_valid_a` latch `ma_first_rdata`, go `MA_DRAIN`. |
-| `MA_DRAIN` | one-cycle pause: suppress `d_req_a` so the arbiter returns to `IDLE` before the second access. |
-| `MA_SECOND` | wait for `arb_idle`, then drive second aligned access (low word + 4, `second_be`/`second_wdata`), go `MA_HOLD`. |
-| `MA_HOLD` | wait for `d_valid_a`, combine with `ma_first_rdata`, go `MA_IDLE`. |
+### d-port (data load/store)
 
-`MA_DRAIN` + the `arb_idle` re-check in `MA_SECOND` are a safety net for slaves
-that hold `mem_valid` for more than one cycle.
+The d-port goes through `kv32_mem_fe`, which handles alignment, sub-word
+positioning, and load extraction.
 
-### First/second access BE and wdata
+## kv32_mem_fe (`rtl/kv32_mem_fe.sv`)
 
-Computed combinationally (`kv32_core.sv:426-468`):
+The memory front-end sits between the core's MEM stage and the external dmem
+bus. It takes a raw memory request (address, size, unpositioned write data,
+funct3) and produces correctly aligned, positioned, and byte-enabled bus
+transactions. For loads, it returns the extracted and sign/zero-extended value.
 
-- **First access** (`first_be`/`first_wdata`): the bytes that belong in the low
-  word, positioned in the correct lanes. `SH` crossing (offset 3) puts the low
-  byte in lane 3; `SW` crossing shifts the appropriate number of low bytes into
-  the high lanes (e.g. offset 1 → `BE=1110`, offset 2 → `BE=1100`,
-  offset 3 → `BE=1000`).
-- **Second access** (`second_be`/`second_wdata`): the remaining bytes positioned
-  in the low lanes of the high word. `SH` crossing puts the high byte in lane 0
-  (`BE=0001`); `SW` puts 1/2/3 remaining bytes in lanes 0/0-1/0-1-2.
+### Upstream interface (core side)
 
-`raw_hw` (`kv32_core.sv:423-424`) extracts the halfword from the
-pipeline-positioned `d_wdata` (bytes 0-1 or bytes 2-3 based on `d_addr[1]`).
+| Signal | Direction | Description |
+|--------|-----------|-------------|
+| `req` | in | Memory operation request (held until `rdata_valid`) |
+| `addr[31:0]` | in | Byte address (ALU result / effective address) |
+| `we` | in | 0=read, 1=store |
+| `size[1:0]` | in | 00=B, 01=H, 10=W |
+| `wdata[31:0]` | in | Raw rs2 value (unpositioned) |
+| `funct3[2:0]` | in | LB/LH/LW/LBU/LHU/SB/SH/SW |
+| `rdata[31:0]` | out | Extracted/sign-extended load result |
+| `rdata_valid` | out | Pulses for one cycle when the operation completes |
+| `err` | out | Bus error from downstream |
 
-### Load data combination
+### Downstream interface (bus side)
 
-`kv32_core.sv:568-603`. While the FSM is active, `d_valid` is suppressed except
-in `MA_HOLD && d_valid_a`, where the two word reads are stitched:
+Standard req/ack protocol: `dmem_req`/`dmem_addr`/`dmem_we`/`dmem_size`/
+`dmem_wdata`/`dmem_be`/`dmem_excl` + `dmem_ack`/`dmem_rdata`/`dmem_err`.
 
-- `SH` (offset 3): `{d_rdata_a[7:0], ma_first_rdata[31:24], 16'h0}`.
-- `SW`: shift the second word's low bytes against the first word's high bytes
-  per `ma_offset` (offset 1 → 8 bits, offset 2 → 16 bits, offset 3 → 24 bits).
+### Internal structure
 
-The `non_crossing_ma` load path (`kv32_core.sv:600-602`) shifts `d_rdata_a`
-right by 8 so the existing LH extractor (keyed on `mem_addr_mem[1]=0`) picks up
-bytes 1-2 as the low halfword.
+Four functional blocks:
 
-### Arbiter-facing mux
+1. **Sub-word store logic** — positions byte/halfword write data into the
+   correct byte lane and computes byte enables. For aligned accesses, this is
+   the final bus output.
 
-`kv32_core.sv:510-566` selects the d-port signals driven to the arbiter per FSM
-state (pass-through in `MA_IDLE` for aligned accesses; first/second access
-fields otherwise). `d_valid_a`/`d_rdata_a` from the arbiter are gated/combined
-in `kv32_core.sv:568-603` before reaching the MEM stage as `d_valid`/`d_rdata`.
+2. **Misalignment detector** — `word_crossing` and `non_crossing_ma` flags.
+   Only evaluated when `req && ma_state == MA_IDLE`:
+   - `word_crossing` — `SH@addr[1:0]=11` or `SW@addr[1:0]≠00`. Triggers the
+     two-access FSM.
+   - `non_crossing_ma` — **only** `SH@addr[1:0]=01`. Handled inline (single
+     access, `BE=0110`, address word-aligned).
+
+3. **Alignment handler FSM** (4-state) — splits crossing accesses into two
+   aligned word transactions:
+
+   ```
+   MA_IDLE → MA_FIRST → MA_BETWEEN → MA_SECOND → MA_IDLE
+   ```
+
+   | State | Action |
+   |-------|--------|
+   | `MA_IDLE` | Detect crossing. If `word_crossing`, latch offset/size, suppress `dmem_req`, go `MA_FIRST`. Inline path for `non_crossing_ma` and aligned accesses. |
+   | `MA_FIRST` | Drive first aligned access (word-aligned addr, `first_be`/`first_wdata`). On `dmem_ack`, latch `ma_first_rdata`, go `MA_BETWEEN`. |
+   | `MA_BETWEEN` | 1-cycle gap: `dmem_req=0`. Unconditional transition to `MA_SECOND`. |
+   | `MA_SECOND` | Drive second aligned access (addr+4, `second_be`/`second_wdata`). On `dmem_ack`, go `MA_IDLE`. |
+
+4. **Load data extraction** — selects and extends the correct bytes from the
+   bus word based on `funct3` and `addr[1:0]`. For crossing loads, stitches
+   the two halves; for non-crossing misaligned loads, shifts right by 8.
+
+### Sub-word stores
+
+The core passes raw `fwd_b` (unpositioned rs2) to the mem_fe. The mem_fe
+computes byte enables and data positioning:
+
+| `size` | Insn | BE / wdata |
+|--------|------|------------|
+| 00 | SB | One byte lane by `addr[1:0]`; `wdata[7:0]` shifted into lane |
+| 01 | SH | Two byte lanes by `addr[1]`; `wdata[15:0]` in low or high half |
+| 10 | SW | `BE=4'b1111`, `wdata` passthrough |
+
+For crossing stores, `raw_hw = wdata[15:0]` (the halfword is always in the low
+16 bits since the core passes raw rs2). First access puts the low byte in the
+correct lane of the low word; second access puts the high byte in the correct
+lane of the high word.
+
+### Sub-word loads
+
+Load data extraction uses the original (unaligned) `addr[1:0]` for byte
+selection. The crossing stitch and non-crossing shift pre-position the data so
+the standard extraction logic works uniformly:
+
+| `funct3` | Insn | Selection | Extension |
+|-----------|------|-----------|-----------|
+| 000 | LB | byte by `addr[1:0]` | sign |
+| 001 | LH | half by `addr[1]` | sign |
+| 010 | LW | full word | — |
+| 100 | LBU | byte by `addr[1:0]` | zero |
+| 101 | LHU | half by `addr[1]` | zero |
+
+### Key gotcha: `non_crossing_ma` invariant
+
+`non_crossing_ma` is **only** the `SH@addr[1:0]=01` case. The load-side shift
+(right by 8 so the LH extractor keyed on `addr[1]=0` picks up bytes 1-2)
+relies on this exact-case assumption. Do not generalize the detector without
+revisiting that shift.

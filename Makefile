@@ -31,11 +31,10 @@ help:
 	@echo "    unit-test-regfile      Regfile: x0, write-during-read, dual-port"
 	@echo "    unit-test-decoder      Decoder: opcodes, immediates, CSR variants"
 	@echo "    unit-test-csr          CSR: read/write, trap, MRET, counters"
-	@echo "    unit-test-mem_arbiter  Arbiter: priority, latency, gnt pulse"
+	@echo "    unit-test-mem_fe       Memory front-end: alignment, sub-word, FSM"
 	@echo ""
 	@echo "  riscv-tests (requires RISC-V toolchain):"
-	@echo "    riscv-tests-compile    Cross-compile all rv32ui tests to build/"
-	@echo "    riscv-tests            Run all rv32ui tests (zero latency)"
+	@echo "    riscv-tests            Auto-checkout, compile, and run all rv32ui tests"
 	@echo "    riscv-tests-latency    Run all rv32ui tests (2-cycle latency)"
 	@echo "    riscv-test-<name>      Run a single test (e.g. riscv-test-add)"
 	@echo ""
@@ -46,7 +45,7 @@ RTL_SOURCES = \
     $(RTL_DIR)/kv32_regfile.sv \
     $(RTL_DIR)/kv32_csr.sv \
     $(RTL_DIR)/kv32_decoder.sv \
-    $(RTL_DIR)/kv32_mem_arbiter.sv \
+    $(RTL_DIR)/kv32_mem_fe.sv \
     $(RTL_DIR)/kv32_core.sv
 
 # Verilator C++ test driver
@@ -55,29 +54,29 @@ TB_CPP = $(TB_DIR)/sim_main.cpp
 # ---- Verilator ----
 
 verilator: verilator-build
-	./obj_dir/Vkv32_core
+	./build/obj_dir/Vkv32_core
 
-verilator-build: $(RTL_SOURCES) $(TB_CPP)
+verilator-build: $(RTL_SOURCES) $(TB_CPP) | build
 	verilator --cc --exe --build -j 1 \
 		-Wall -Wno-fatal --trace \
 		--top-module kv32_core \
 		$(RTL_SOURCES) $(TB_CPP) \
-		--Mdir obj_dir
+		--Mdir build/obj_dir
 
 # Run ALU test (default, same as 'verilator')
 test-alu: verilator
 
 # Run sub-word memory test
 test-subword: verilator-build
-	./obj_dir/Vkv32_core --test subword
+	./build/obj_dir/Vkv32_core --test subword
 
 # Run all built-in tests and check exit code
 test-all: test-alu test-subword
 
 # Run built-in tests with multi-cycle memory latency (exercises stall paths)
 test-latency: verilator-build
-	./obj_dir/Vkv32_core --test alu --latency 2 --notrace
-	./obj_dir/Vkv32_core --test subword --latency 2 --notrace
+	./build/obj_dir/Vkv32_core --test alu --latency 2 --notrace
+	./build/obj_dir/Vkv32_core --test subword --latency 2 --notrace
 
 # Run riscv-tests with multi-cycle memory latency
 riscv-tests-latency: verilator-build
@@ -87,7 +86,7 @@ riscv-tests-latency: verilator-build
 		name=$$(basename $$test); \
 		total=$$((total+1)); \
 		printf "  %-30s " $$name; \
-		if ./obj_dir/Vkv32_core --binary $$test --cycles 100000 --latency 2 --notrace > /tmp/kv32_lat_$${name}.log 2>&1; then \
+		if ./build/obj_dir/Vkv32_core --binary $$test --cycles 100000 --latency 2 --notrace > /tmp/kv32_lat_$${name}.log 2>&1; then \
 			printf "PASS\n"; pass=$$((pass+1)); \
 		else \
 			result=$$?; \
@@ -120,14 +119,24 @@ RISCV_CFLAGS  := -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartf
 RISCV_INCLUDES := -I$(RISCV_TESTS_DIR)/env/p -I$(RISCV_TESTS_DIR)/isa/macros/scalar
 RISCV_LDFLAGS := -T$(RISCV_TESTS_DIR)/env/p/link.ld
 
-# Compile all rv32ui tests
-riscv-tests-compile:
-	@if [ ! -e $(RISCV_TESTS_DIR)/.git ]; then \
-		echo "Error: riscv-tests submodule not initialized at $(RISCV_TESTS_DIR)"; \
-		echo "Run: git submodule update --init --recursive"; \
-		exit 1; \
-	fi
-	@mkdir -p $(RISCV_TESTS_BUILD)
+# Ensure riscv-tests submodule (and nested env submodule) is checked out
+$(RISCV_TESTS_DIR)/env/p/link.ld:
+	@echo "Initializing riscv-tests submodule..."; \
+	git submodule update --init --recursive
+
+# Compile a single rv32ui test (invoked automatically by riscv-test-% and riscv-tests)
+$(RISCV_TESTS_BUILD)/rv32ui-p-%: $(RISCV_TESTS_DIR)/isa/rv32ui/%.S $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
+	@echo "  CC  $*"; \
+	march=$(RISCV_MARCH); \
+	[ "$*" = "fence_i" ] && march=rv32izicsr_zifencei; \
+	$(RISCV_GCC) $(RISCV_CFLAGS) -march=$$march -mabi=$(RISCV_MABI) \
+		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
+
+$(RISCV_TESTS_BUILD):
+	@mkdir -p $@
+
+# Compile all rv32ui tests (wildcard evaluated at recipe time, after submodule checkout)
+riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 	@for test in $(RISCV_TESTS_DIR)/isa/rv32ui/*.S; do \
 		name=$$(basename $$test .S); \
 		target=$(RISCV_TESTS_BUILD)/rv32ui-p-$$name; \
@@ -139,25 +148,24 @@ riscv-tests-compile:
 				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
 		fi; \
 	done
-	@echo "riscv-tests compiled in $(RISCV_TESTS_BUILD)/"
 
 # Run a single riscv-test: make riscv-test-TESTNAME
-riscv-test-%: verilator-build
-	./obj_dir/Vkv32_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$*
+riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
+	./build/obj_dir/Vkv32_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$*
 
-# Run all rv32ui tests (uses pre-compiled ELF binaries, skips .dump files)
-riscv-tests: verilator-build
+# Run all rv32ui tests (auto-compiles if needed, skips .dump files)
+riscv-tests: verilator-build riscv-tests-compile
 	@pass=0; fail=0; skip=0; total=0; \
 	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-*; do \
 		case "$$test" in *.dump) continue;; esac; \
 		name=$$(basename $$test); \
 		total=$$((total+1)); \
 		printf "  %-30s " $$name; \
-		if ./obj_dir/Vkv32_core --binary $$test --cycles 50000 --notrace > /tmp/kv32_test_$${name}.log 2>&1; then \
+		if ./build/obj_dir/Vkv32_core --binary $$test --cycles 50000 --notrace > build/kv32_test_$${name}.log 2>&1; then \
 			printf "PASS\n"; pass=$$((pass+1)); \
 		else \
 			result=$$?; \
-			if grep -q TIMEOUT /tmp/kv32_test_$${name}.log; then \
+			if grep -q TIMEOUT build/kv32_test_$${name}.log; then \
 				printf "TIMEOUT\n"; skip=$$((skip+1)); \
 			else \
 				printf "FAIL\n"; fail=$$((fail+1)); \
@@ -173,42 +181,42 @@ riscv-tests: verilator-build
 # Each target builds and runs an isolated testbench for one submodule.
 # This catches RTL bugs at the module boundary before integration.
 
-UNIT_TESTS = alu regfile decoder csr mem_arbiter
+UNIT_TESTS = alu regfile decoder csr mem_fe
 
-unit-test-alu: $(TB_DIR)/tb_alu.cpp $(RTL_DIR)/kv32_alu.sv
+unit-test-alu: $(TB_DIR)/tb_alu.cpp $(RTL_DIR)/kv32_alu.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
 		--top-module kv32_alu \
 		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_alu.sv $(TB_DIR)/tb_alu.cpp \
-		--Mdir obj_dir_alu
-	./obj_dir_alu/Vkv32_alu
+		--Mdir build/obj_dir_alu
+	./build/obj_dir_alu/Vkv32_alu
 
-unit-test-regfile: $(TB_DIR)/tb_regfile.cpp $(RTL_DIR)/kv32_regfile.sv
+unit-test-regfile: $(TB_DIR)/tb_regfile.cpp $(RTL_DIR)/kv32_regfile.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
 		--top-module kv32_regfile \
 		$(RTL_DIR)/kv32_regfile.sv $(TB_DIR)/tb_regfile.cpp \
-		--Mdir obj_dir_regfile
-	./obj_dir_regfile/Vkv32_regfile
+		--Mdir build/obj_dir_regfile
+	./build/obj_dir_regfile/Vkv32_regfile
 
-unit-test-decoder: $(TB_DIR)/tb_decoder.cpp $(RTL_DIR)/kv32_decoder.sv
+unit-test-decoder: $(TB_DIR)/tb_decoder.cpp $(RTL_DIR)/kv32_decoder.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
 		--top-module kv32_decoder \
 		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_decoder.sv $(TB_DIR)/tb_decoder.cpp \
-		--Mdir obj_dir_decoder
-	./obj_dir_decoder/Vkv32_decoder
+		--Mdir build/obj_dir_decoder
+	./build/obj_dir_decoder/Vkv32_decoder
 
-unit-test-csr: $(TB_DIR)/tb_csr.cpp $(RTL_DIR)/kv32_csr.sv
+unit-test-csr: $(TB_DIR)/tb_csr.cpp $(RTL_DIR)/kv32_csr.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
 		--top-module kv32_csr \
 		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_csr.sv $(TB_DIR)/tb_csr.cpp \
-		--Mdir obj_dir_csr
-	./obj_dir_csr/Vkv32_csr
+		--Mdir build/obj_dir_csr
+	./build/obj_dir_csr/Vkv32_csr
 
-unit-test-mem_arbiter: $(TB_DIR)/tb_mem_arbiter.cpp $(RTL_DIR)/kv32_mem_arbiter.sv
+unit-test-mem_fe: $(TB_DIR)/tb_mem_fe.cpp $(RTL_DIR)/kv32_mem_fe.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_mem_arbiter \
-		$(RTL_DIR)/kv32_mem_arbiter.sv $(TB_DIR)/tb_mem_arbiter.cpp \
-		--Mdir obj_dir_mem_arbiter
-	./obj_dir_mem_arbiter/Vkv32_mem_arbiter
+		--top-module kv32_mem_fe \
+		$(RTL_DIR)/kv32_mem_fe.sv $(TB_DIR)/tb_mem_fe.cpp \
+		--Mdir build/obj_dir_mem_fe
+	./build/obj_dir_mem_fe/Vkv32_mem_fe
 
 unit-tests: $(addprefix unit-test-,$(UNIT_TESTS))
 	@echo ""
@@ -256,23 +264,29 @@ lint: $(RTL_SOURCES)
 # ---- Clean ----
 
 clean: clean-integration clean-unit clean-riscv-tests
+	@rm -rf build
 	@echo "Removed all build artifacts"
 
 clean-integration:
-	rm -f kv32_core_tb.vcd
-	rm -rf obj_dir
+	@rm -f build/kv32_core_tb.vcd build/kv32_test_*.log
+	@rm -rf build/obj_dir
 
 clean-unit:
-	rm -rf obj_dir_alu obj_dir_regfile obj_dir_decoder obj_dir_csr obj_dir_mem_arbiter
+	@rm -rf build/obj_dir_alu build/obj_dir_regfile build/obj_dir_decoder build/obj_dir_csr build/obj_dir_mem_fe
 
 clean-riscv-tests:
-	rm -rf $(RISCV_TESTS_BUILD)
-	rmdir build 2>/dev/null || true
+	@rm -rf build/riscv-tests
+
+build:
+	@mkdir -p build
+
+# Prevent Make from deleting compiled riscv-tests binaries (they're built via pattern rules)
+.SECONDARY:
 
 .PHONY: help verilator verilator-build test-alu test-subword test-all test-latency \
         riscv-tests-compile riscv-test-% riscv-tests riscv-tests-latency \
-        unit-test-alu unit-test-regfile unit-test-decoder unit-test-csr \
-        unit-test-mem_arbiter unit-tests lint format format-check clean \
+        unit-test-alu unit-test-regfile unit-test-decoder unit-test-csr unit-test-mem_fe \
+        unit-tests lint format format-check clean \
         clean-integration clean-unit clean-riscv-tests
 
 .DEFAULT_GOAL := help

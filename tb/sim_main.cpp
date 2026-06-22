@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <vector>
 
 // ============================================================================
@@ -332,10 +334,23 @@ static const RegCheck check_subword[] = {
 static vluint64_t sim_time = 0;
 static int fail_count = 0;
 
+// Forward declarations — defined after tick()
+static void imem_responder(Vkv32_core* top);
+static void dmem_responder(Vkv32_core* top);
+
 static void tick(Vkv32_core* top, VerilatedVcdC* tfp) {
     top->clk = 0;
-    top->eval();
+    top->eval();  // Evaluate combinational: outputs reflect current state
     if (tfp) tfp->dump(sim_time++);
+
+    // Drive memory responders with fresh outputs, get ack
+    imem_responder(top);
+    dmem_responder(top);
+
+    // Re-evaluate so ack propagates through combinational logic
+    // (rdata_valid, mem_stall, etc.) before the rising edge captures state.
+    top->eval();
+
     top->clk = 1;
     top->eval();
     if (tfp) tfp->dump(sim_time++);
@@ -351,68 +366,76 @@ static void reset(Vkv32_core* top, VerilatedVcdC* tfp) {
     top->rst_n = 1;
 }
 
-// Memory responder: implements req/gnt/valid protocol
-// When mem_latency=0, behaves as zero-latency (combinational gnt+valid).
-// When mem_latency>0, grants combinationally but delays mem_valid by
-// N cycles, exercising the arbiter's D_PORT_ACTIVE hold, the
-// misalignment handler's MA_WAIT state, and pipeline mem_stall paths.
+// Memory responder: implements req/ack protocol for both ports.
+// When mem_latency=0, behaves as zero-latency (combinational ack).
+// When mem_latency>0, delays ack by N cycles, exercising the
+// misalignment handler's FSM states and pipeline mem_stall paths.
 //
-// mem_valid is a level signal (high after latency expires, while mem_req
-// stays high). New transactions are detected by address change, since
-// the i-port keeps mem_req continuously high.
-static struct MemState {
+// The master holds req until ack. For loads, rdata accompanies ack.
+// Each port has independent state — they share the same BRAM.
+struct MemPortState {
     uint32_t rdata;
-    bool     gnt_reg;
-    bool     valid_reg;
-} mem;
+    bool     pending;
+    int      latency_count;
+    uint32_t txn_addr;
+    bool     txn_we;
+};
 
-static int      mem_latency    = 0;       // cycles between gnt and valid (0 = combinational)
-static int      latency_count  = 0;       // countdown timer for in-flight transaction
-static bool     mem_pending    = false;   // transaction in flight (latency counting or valid asserted)
-static uint32_t txn_addr       = 0xFFFFFFFF; // address of the current transaction
-static bool     txn_we         = false;      // write-enable of the current transaction
+static int mem_latency = 0;  // cycles between req and ack (0 = combinational)
 
-static void mem_responder(Vkv32_core* top) {
-    // Combinational grant — slave accepts immediately
-    top->mem_gnt = top->mem_req;
+static MemPortState imem_state = {0, false, 0, 0xFFFFFFFF, false};
+static MemPortState dmem_state = {0, false, 0, 0xFFFFFFFF, false};
 
-    // Detect start of new transaction: req high, gnt high, and either
-    // no transaction pending, or the address changed, or the transaction
-    // type changed (write→read or read→write at the same address —
-    // happens when a store is immediately followed by a load from the
-    // same address, with no i-port fetch in between).
-    bool new_txn = top->mem_req && top->mem_gnt &&
-                   (!mem_pending || top->mem_addr != txn_addr ||
-                    top->mem_we != txn_we);
-
+static void port_responder(MemPortState& state,
+                           bool req, uint32_t addr, bool we,
+                           uint32_t wdata, uint8_t be,
+                           uint8_t& ack, uint32_t& rdata) {
+    // Detect start of new transaction: req high and either not pending,
+    // or address/we changed (i-port never deasserts req, so new fetches
+    // are detected by address change).
+    bool new_txn = req && (!state.pending || addr != state.txn_addr || we != state.txn_we);
     if (new_txn) {
-        mem_pending   = true;
-        latency_count = mem_latency;
-        txn_addr      = top->mem_addr;
-        txn_we        = top->mem_we;
-        if (top->mem_we) {
-            bram_write(top->mem_addr, top->mem_wdata, top->mem_be);
+        state.pending       = true;
+        state.latency_count = mem_latency;
+        state.txn_addr      = addr;
+        state.txn_we        = we;
+        if (we) {
+            bram_write(addr, wdata, be);
         } else {
-            mem.rdata = bram_read(top->mem_addr);
+            state.rdata = bram_read(addr);
         }
     }
 
-    // Drive mem_valid after latency expires (level signal while req is high)
-    if (mem_pending) {
-        if (latency_count > 0) {
-            latency_count--;
-            top->mem_valid = 0;
+    // Drive ack after latency expires
+    if (state.pending) {
+        if (state.latency_count > 0) {
+            state.latency_count--;
+            ack = 0;
         } else {
-            top->mem_valid = top->mem_req;
+            ack   = req;  // ack while req is held
+            rdata = state.rdata;
         }
-        // Clear pending if req drops (arbiter returned to IDLE with no new request)
-        if (!top->mem_req) mem_pending = false;
+        // Clear pending if req drops (master done — d-port only)
+        if (!req) state.pending = false;
     } else {
-        top->mem_valid = 0;
+        ack = 0;
     }
+}
 
-    top->mem_rdata = mem.rdata;
-    top->mem_err   = 0;
+static void imem_responder(Vkv32_core* top) {
+    port_responder(imem_state,
+                   top->imem_req, top->imem_addr, false,
+                   0, 0xF,
+                   top->imem_ack, top->imem_rdata);
+    top->imem_err = 0;
+}
+
+static void dmem_responder(Vkv32_core* top) {
+    port_responder(dmem_state,
+                   top->dmem_req, top->dmem_addr, top->dmem_we,
+                   top->dmem_wdata, top->dmem_be,
+                   top->dmem_ack, top->dmem_rdata);
+    top->dmem_err = 0;
 }
 
 static void load_program(const TestWord* prog, int count) {
@@ -430,7 +453,6 @@ static uint32_t read_reg(Vkv32_core* top, int reg) {
 static void run_and_check(Vkv32_core* top, VerilatedVcdC* tfp,
                           const RegCheck* checks, int max_cycles) {
     for (int i = 0; i < max_cycles; i++) {
-        mem_responder(top);
         tick(top, tfp);
     }
 
@@ -458,22 +480,19 @@ static int run_riscv_test(Vkv32_core* top, VerilatedVcdC* tfp,
                           uint32_t tohost_addr, int max_cycles) {
     bool debug_ma = (getenv("KV32_DEBUG_MA") != nullptr);
     for (int i = 0; i < max_cycles; i++) {
-        mem_responder(top);
         tick(top, tfp);
 
         if (debug_ma && i >= 436 && i <= 460) {
             uint32_t w0 = bram_read(0x80002000);
             uint32_t w1 = bram_read(0x80002004);
             auto r = top->rootp;
-            printf("  [%d] ma=%d we=%d addr_a=0x%08X be_a=0x%X wd_a=0x%08X wd_mem=0x%08X arb=%d lat=0x%08X B0=0x%08X B1=0x%08X\n",
-                   i, r->kv32_core__DOT__ma_state,
+            printf("  [%d] ma=%d we=%d dmem_addr=0x%08X dmem_be=0x%X dmem_wdata=0x%08X wd_mem=0x%08X B0=0x%08X B1=0x%08X\n",
+                   i, r->kv32_core__DOT__u_mem_fe__DOT__ma_state,
                    r->kv32_core__DOT__mem_write_mem,
-                   r->kv32_core__DOT__d_addr_a,
-                   r->kv32_core__DOT__d_be_a,
-                   r->kv32_core__DOT__d_wdata_a,
+                   top->dmem_addr,
+                   top->dmem_be,
+                   top->dmem_wdata,
                    r->kv32_core__DOT__mem_wdata_mem,
-                   r->kv32_core__DOT__u_arbiter__DOT__state,
-                   r->kv32_core__DOT__u_arbiter__DOT__d_addr_lat,
                    w0, w1);
         }
 
@@ -542,9 +561,10 @@ int main(int argc, char** argv) {
     Vkv32_core* top = new Vkv32_core;
     VerilatedVcdC* tfp = nullptr;
     if (trace) {
+        mkdir("build", 0755);  // ensure build directory exists
         tfp = new VerilatedVcdC;
         top->trace(tfp, 99);
-        tfp->open("kv32_core_tb.vcd");
+        tfp->open("build/kv32_core_tb.vcd");
     }
 
     // Initialize inputs
@@ -553,15 +573,14 @@ int main(int argc, char** argv) {
     top->irq_external_i = 0;
     top->irq_timer_i    = 0;
     top->irq_software_i = 0;
-    top->mem_gnt = 0;
-    top->mem_valid = 0;
-    top->mem_rdata = 0;
-    top->mem_err = 0;
-    mem = {0, false, false};
-    mem_pending    = false;
-    latency_count  = 0;
-    txn_addr       = 0xFFFFFFFF;
-    txn_we         = false;
+    top->imem_ack  = 0;
+    top->imem_rdata = 0;
+    top->imem_err  = 0;
+    top->dmem_ack  = 0;
+    top->dmem_rdata = 0;
+    top->dmem_err  = 0;
+    imem_state = {0, false, 0, 0xFFFFFFFF, false};
+    dmem_state = {0, false, 0, 0xFFFFFFFF, false};
 
     if (mem_latency > 0)
         printf("Memory latency: %d cycles\n", mem_latency);

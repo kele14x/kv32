@@ -8,7 +8,7 @@ debugging see [CLAUDE.md](../CLAUDE.md#debugging-tips).
 
 Each RTL submodule has an isolated Verilator C++ testbench in `tb/`, compiled
 with that module as the Verilator top (`--top-module kv32_<module>`) in a
-separate `obj_dir_<module>/`. Each prints
+separate `build/obj_dir_<module>/`. Each prints
 `=== tb_<module>: N tests, M failures ===` and exits non-zero on failure.
 
 | Testbench | Module | Coverage |
