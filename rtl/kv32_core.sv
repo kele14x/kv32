@@ -38,12 +38,12 @@ module kv32_core
   logic        d_we;
   logic [ 1:0] d_size;
   logic [31:0] d_wdata;
-  logic i_valid;
+  logic        i_valid;
   logic [31:0] i_rdata;
 
   // Error signals reserved for exception handling (Phase 5)
   // verilator lint_off UNUSEDSIGNAL
-  logic i_err;
+  logic        i_err;
   // verilator lint_on UNUSEDSIGNAL
 
   // Memory front-end outputs
@@ -57,7 +57,7 @@ module kv32_core
   assign imem_req   = i_req;
   assign imem_addr  = i_addr;
   assign imem_we    = 1'b0;
-  assign imem_size  = 2'b10;       // always word
+  assign imem_size  = 2'b10;  // always word
   assign imem_wdata = 32'h0;
   assign imem_be    = 4'hF;
   assign imem_excl  = 1'b0;
@@ -68,27 +68,27 @@ module kv32_core
   // Data memory front-end: handles alignment, sub-word positioning,
   // load extraction, and misaligned access splitting.
   kv32_mem_fe u_mem_fe (
-      .clk         (clk),
-      .rst_n       (rst_n),
-      .req         (d_req),
-      .addr        (d_addr),
-      .we          (d_we),
-      .size        (d_size),
-      .wdata       (d_wdata),
-      .funct3      (funct3_mem),
-      .rdata       (fe_rdata),
-      .rdata_valid (fe_rdata_valid),
-      .err         (fe_err),
-      .dmem_req    (dmem_req),
-      .dmem_addr   (dmem_addr),
-      .dmem_we     (dmem_we),
-      .dmem_size   (dmem_size),
-      .dmem_wdata  (dmem_wdata),
-      .dmem_be     (dmem_be),
-      .dmem_excl   (dmem_excl),
-      .dmem_ack    (dmem_ack),
-      .dmem_rdata  (dmem_rdata),
-      .dmem_err    (dmem_err)
+      .clk        (clk),
+      .rst_n      (rst_n),
+      .req        (d_req),
+      .addr       (d_addr),
+      .we         (d_we),
+      .size       (d_size),
+      .wdata      (d_wdata),
+      .funct3     (funct3_mem),
+      .rdata      (fe_rdata),
+      .rdata_valid(fe_rdata_valid),
+      .err        (fe_err),
+      .dmem_req   (dmem_req),
+      .dmem_addr  (dmem_addr),
+      .dmem_we    (dmem_we),
+      .dmem_size  (dmem_size),
+      .dmem_wdata (dmem_wdata),
+      .dmem_be    (dmem_be),
+      .dmem_excl  (dmem_excl),
+      .dmem_ack   (dmem_ack),
+      .dmem_rdata (dmem_rdata),
+      .dmem_err   (dmem_err)
   );
 
   // Pipeline registers
@@ -568,8 +568,8 @@ module kv32_core
       instr_valid_mem <= instr_valid_ex;
 
       // Pass raw rs2 to mem_fe — sub-word positioning is handled there
-      mem_wdata_mem <= fwd_b;
-      mem_size_mem  <= funct3_ex[1:0];  // Load/store size from EX stage
+      mem_wdata_mem   <= fwd_b;
+      mem_size_mem    <= funct3_ex[1:0];  // Load/store size from EX stage
     end
   end
 

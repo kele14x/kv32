@@ -47,11 +47,11 @@ IF → ID → EX → MEM → WB
 
 Linux requires M, S, and U modes.
 
-| Mode | Level | Purpose                              |
-|------|-------|--------------------------------------|
-| M    | 3     | Boot, firmware, SBI, trap handling   |
-| S    | 1     | Linux kernel                         |
-| U    | 0     | Userspace processes                  |
+| Mode   | Level   | Purpose                                |
+| ------ | ------- | -------------------------------------- |
+| M      | 3       | Boot, firmware, SBI, trap handling     |
+| S      | 1       | Linux kernel                           |
+| U      | 0       | Userspace processes                    |
 
 - `mret` / `sret` / `uret` return from respective modes
 - Traps from lower modes escalate to the next-higher mode's trap vector (or M if that mode hasn't delegated)
@@ -78,12 +78,12 @@ Linux requires M, S, and U modes.
 
 Counters:
 
-| Address | Name        | Purpose                              |
-|---------|-------------|--------------------------------------|
-| 0xB00   | `mcycle`    | Cycle counter (low 32)               |
-| 0xB80   | `mcycleh`   | Cycle counter (high 32)              |
-| 0xB02   | `minstret`  | Instructions retired (low 32)        |
-| 0xB82   | `minstreth` | Instructions retired (high 32)       |
+| Address   | Name          | Purpose                                |
+| --------- | ------------- | -------------------------------------- |
+| 0xB00     | `mcycle`      | Cycle counter (low 32)                 |
+| 0xB80     | `mcycleh`     | Cycle counter (high 32)                |
+| 0xB02     | `minstret`    | Instructions retired (low 32)          |
+| 0xB82     | `minstreth`   | Instructions retired (high 32)         |
 
 `mcounteren` (0x306): controls S-mode access to cycle/time/instret.
 
@@ -105,14 +105,14 @@ Counters:
 
 ### 3.3 User-Mode CSRs (counters only)
 
-| Address | Name       | Purpose                                                                          |
-|---------|------------|--------------------------------------------------------------------------------- |
-| 0xC00   | `cycle`    | Read-only shadow of `mcycle`                                                     |
-| 0xC80   | `cycleh`   | High half                                                                        |
-| 0xC01   | `time`     | Wall-clock time — **emulated by M-mode firmware** (reads CLINT `mtime` over AXI) |
-| 0xC81   | `timeh`    | High half (emulated)                                                             |
-| 0xC02   | `instret`  | Read-only shadow of `minstret`                                                   |
-| 0xC82   | `instreth` | High half                                                                        |
+| Address   | Name         | Purpose                                                                           |
+| --------- | ------------ | --------------------------------------------------------------------------------- |
+| 0xC00     | `cycle`      | Read-only shadow of `mcycle`                                                      |
+| 0xC80     | `cycleh`     | High half                                                                         |
+| 0xC01     | `time`       | Wall-clock time — **emulated by M-mode firmware** (reads CLINT `mtime` over AXI)  |
+| 0xC81     | `timeh`      | High half (emulated)                                                              |
+| 0xC02     | `instret`    | Read-only shadow of `minstret`                                                    |
+| 0xC82     | `instreth`   | High half                                                                         |
 
 **`time` CSR**: The CPU core does **not** implement `time`/`timeh` in hardware.
 Reads to addresses 0xC01 / 0xC81 raise an illegal-instruction trap; M-mode
@@ -122,11 +122,11 @@ core free of any dependency on the CLINT's physical location or clock domain.
 
 ### 3.4 FPU CSRs
 
-| Address | Name     | Purpose                      |
-|---------|----------|------------------------------|
-| 0x001   | `fflags` | FP accrued exception flags   |
-| 0x002   | `frm`    | FP rounding mode             |
-| 0x003   | `fcsr`   | Combined fflags + frm        |
+| Address   | Name       | Purpose                        |
+| --------- | ---------- | ------------------------------ |
+| 0x001     | `fflags`   | FP accrued exception flags     |
+| 0x002     | `frm`      | FP rounding mode               |
+| 0x003     | `fcsr`     | Combined fflags + frm          |
 
 Access gated by `mstatus.FS`. FS=Off causes illegal-instruction trap.
 
@@ -134,102 +134,132 @@ Access gated by `mstatus.FS`. FS=Off causes illegal-instruction trap.
 
 ## 4. Memory Interface
 
-The CPU core uses a **simple synchronous memory interface** with handshake-based
-flow control. This interface is used for instruction fetches, data loads/stores,
-and page-table walks. In Phase 8 (SoC integration), an AXI4 adapter translates
-this interface into a standard AXI4 master port for SoC-level integration (§4.7).
+The CPU core exposes **two independent memory ports** using a simple **req/ack**
+handshake: `imem_*` for instruction fetch and `dmem_*` for data load/store. The
+two ports share no internal resource — at SoC integration time an external
+crossbar or interconnect fabric arbitrates between them. In Phase 8, an AXI4
+adapter translates each port into a standard AXI4 master (§4.7).
+
+The data port is routed through `kv32_mem_fe` (`rtl/kv32_mem_fe.sv`), which owns
+all data-memory complexity: sub-word store positioning, byte-enable generation,
+load data extraction with sign/zero extension, and misaligned-access splitting
+(§4.3). The instruction port is a direct passthrough from the IF stage — the
+core never issues a sub-word or misaligned fetch (§7.2: instruction-address
+misaligned traps cause 0).
 
 ### 4.1 Signal list
 
-**Request signals** (master -> slave, held stable until `gnt`):
+Each port uses the same signal set, prefixed `imem_` or `dmem_`.
 
-| Signal       | Width | Purpose                                                                          |
-| ------------ | ----- | -------------------------------------------------------------------------------- |
-| `mem_req`    | 1     | Master has a transaction pending                                                 |
-| `mem_addr`   | 32    | Byte-aligned address                                                             |
-| `mem_we`     | 1     | 0 = read, 1 = write                                                              |
-| `mem_size`   | 2     | `00` = byte, `01` = half, `10` = word (informational)                            |
-| `mem_wdata`  | 32    | Write data, right-aligned per `mem_size`                                         |
-| `mem_be`     | 4     | Byte enable strobes -- **authoritative** for write granularity                   |
-| `mem_excl`   | 1     | Exclusive access hint (LR/SC, Phase 4; tied to 0 in Phases 1-3)                  |
+**Request signals** (master → slave, held stable from `req` assertion until `ack`):
 
-**Handshake signal** (slave -> master, request acceptance):
+| Signal       | Width | Purpose                                                                                                                                                                                                                                            |
+| ------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `*_req`      | 1     | Master has a transaction pending. Held high until `ack`.                                                                                                                                                                                           |
+| `*_addr`     | 32    | Byte address. The slave must word-align externally if it requires word-addressed access (the core may drive unaligned addresses on `dmem_*` — see §4.3).                                                                                           |
+| `*_we`       | 1     | 0 = read, 1 = write                                                                                                                                                                                                                                |
+| `*_size`     | 2     | `00` = byte, `01` = half, `10` = word. Informational — `*_be` is authoritative. On `dmem_*` split beats from a misaligned access, `*_size` reflects the original access size, not the beat width; the slave must use `*_be` for write granularity. |
+| `*_wdata`    | 32    | Write data, positioned per `*_be`                                                                                                                                                                                                                  |
+| `*_be`       | 4     | Byte enable strobes — **authoritative** for write granularity                                                                                                                                                                                      |
+| `*_excl`     | 1     | Exclusive access hint (LR/SC, Phase 4; tied to 0 in Phases 1-3)                                                                                                                                                                                    |
 
-| Signal      | Width | Purpose                                  |
-| ----------- | ----- | ---------------------------------------- |
-| `mem_gnt`   | 1     | Slave accepts the request this cycle     |
+**Response signals** (slave → master, on the same cycle the transaction completes):
 
-**Response signals** (slave -> master, 0+ cycles after `gnt`):
-
-| Signal      | Width | Purpose                                                                          |
-| ----------- | ----- | -------------------------------------------------------------------------------- |
-| `mem_valid` | 1     | Response is valid this cycle                                                     |
-| `mem_rdata` | 32    | Read data (undefined on writes or when `valid=0`)                                |
-| `mem_err`   | 1     | Transaction failed -- raises load/store access-fault exception                   |
+| Signal      | Width | Purpose                                                                                      |
+| ----------- | ----- | -------------------------------------------------------------------------------------------- |
+| `*_ack`     | 1     | Transaction complete this cycle. For loads, `*_rdata` is valid on the same cycle as `*_ack`. |
+| `*_rdata`   | 32    | Read data (undefined on writes or when `ack=0`)                                              |
+| `*_err`     | 1     | Transaction failed — raises load/store access-fault exception (§7.2, cause 5/7)              |
 
 ### 4.2 Protocol rules
 
-1. **Request acceptance**: a transaction begins on any cycle where `mem_req=1` AND
-   `mem_gnt=1`. The master must hold all request signals stable from the cycle it
-   asserts `mem_req` until `mem_gnt` is seen.
+1. **Handshake**: a transaction completes on any cycle where `*_req=1` AND
+   `*_ack=1`. The master must hold all request signals stable from the cycle it
+   asserts `*_req` until it sees `*_ack`.
 
-2. **No mid-flight cancellation**: once `mem_req=1`, the master cannot retract.
-   The slave will eventually grant it (possibly immediately).
+2. **No mid-flight cancellation**: once `*_req=1`, the master cannot retract.
+   The slave will eventually `ack` it (possibly immediately).
 
-3. **One outstanding transaction**: the master cannot issue a new `mem_req` until
-   it has seen `mem_valid` for the previous one. (Pipelining with N outstanding
-   transactions is deferred to Phase 8 if needed.)
+3. **One outstanding transaction per port**: the master cannot issue a new
+   `*_req` on a given port until it has seen `*_ack` for the previous one. The
+   two ports are independent — `imem_*` and `dmem_*` may have transactions
+   outstanding simultaneously, to be arbitrated by the SoC interconnect.
+   (Pipelining with N outstanding transactions per port is deferred to Phase 8
+   if needed.)
 
-4. **Variable latency**: `mem_valid` may arrive 0, 1, or many cycles after
-   `mem_gnt`. Zero-latency is legal (combinational response — typical for
-   BRAM-backed testbench responders).
+4. **Variable latency**: `*_ack` may arrive 0, 1, or many cycles after `*_req`.
+   Zero-latency is legal (`*_ack` in the same cycle as `*_req` — typical for
+   combinational BRAM-backed responders).
 
-5. **Write semantics**: writes are committed on `mem_gnt` (the slave has accepted
-   responsibility for the data). `mem_valid` still returns to complete the
-   transaction from the master's point of view (the CPU needs to know the store
-   retired). For writes, `mem_rdata` is undefined.
+5. **Write semantics**: writes are committed on `*_ack` (the slave has accepted
+   responsibility for the data). For writes, `*_rdata` is undefined.
 
-6. **Error handling**: `mem_err=1` alongside `mem_valid` means the transaction
-   failed. The CPU raises a load/store access-fault exception. `mem_rdata` is
-   undefined on error.
+6. **Error handling**: `*_err=1` alongside `*_ack` means the transaction failed.
+   The CPU raises a load/store access-fault exception. `*_rdata` is undefined on
+   error. For `dmem_*` misaligned accesses split into two beats (§4.3), an `*_err`
+   on either beat aborts the operation — the core reports the error on the
+   failing beat and does not issue the remaining beat.
 
-### 4.3 Alignment invariant
+### 4.3 Alignment invariant and misaligned handling
 
-**Rule**: `mem_addr` must be aligned to `mem_size`:
+**Bus-side invariant**: the `imem_*` port only issues word-aligned addresses
+(`imem_addr[1:0]==00`, `imem_size=2'b10`, `imem_be=4'b1111`). The `dmem_*` port
+issues word-aligned addresses for any access with `dmem_size > 0`; byte accesses
+may use any address. A slave that requires word-aligned addresses can therefore
+ignore `dmem_addr[1:0]` for `dmem_size > 0` beats.
 
-- `mem_size = 00` (byte): any address is valid
-- `mem_size = 01` (half): `mem_addr[0] == 0`
-- `mem_size = 10` (word): `mem_addr[1:0] == 00`
+**Misaligned access handling** (data port only): unaligned `LH`/`LW`/`SH`/`SW`
+emitted by the pipeline are handled in hardware by `kv32_mem_fe`, not by
+trap-and-emulate:
 
-The responder assumes this invariant and is not required to handle misaligned
-word/halfword accesses. Misalignment detection is the CPU pipeline's responsibility
-(§7.2: misaligned-address exception, cause 4/6). M-mode firmware emulates misaligned
-accesses via multiple aligned byte/halfword operations.
+- **Naturally aligned**: single bus transaction, passthrough.
+- **Non-crossing misaligned** (`SH@addr[1:0]=01` only — both bytes within one
+  word): single bus transaction with `dmem_addr` word-aligned, `dmem_be=0110`,
+  and the load result shifted right by 8 bits.
+- **Word-crossing misaligned** (`SH@addr[1:0]=11`, `SW@addr[1:0]!=00`): two
+  sequential bus transactions, driven by a 4-state FSM
+  (`IDLE→FIRST→BETWEEN→SECOND→IDLE`). The first beat carries the high bytes of
+  the word at `addr[31:2]`; the second beat carries the low bytes of the next
+  word at `addr[31:2]+4`. `dmem_be` is authoritative on each beat; `dmem_size`
+  still reflects the original access size and must not be used by the slave to
+  determine beat width. For loads, the two beats' data are stitched and then
+  sign/zero-extended per `funct3`.
 
-**Rationale**: trap-and-emulate is simpler than hardware splitting in the pipeline.
-If profiling later shows misaligned access is a bottleneck, upgrade to hardware
-splitting in v1.1 without changing the memory interface contract.
+**Address-overflow case**: a crossing access whose second beat would wrap past
+`0xFFFFFFFF` (i.e. `aligned_base == 0xFFFFFFFC`) is detected by `kv32_mem_fe`,
+which asserts `dmem_err` with `rdata_valid` without issuing either beat.
 
-### 4.4 Two internal ports + arbiter
+**Rationale**: hardware splitting was chosen over trap-and-emulate because it
+keeps misaligned access latency predictable and avoids trapping for an event
+Linux expects to succeed. Cause 4/6 (load/store address misaligned) is therefore
+never raised for data accesses in this implementation; cause 5/7 (load/store
+access fault) is raised only on `dmem_err` from the slave or on the address
+overflow above. The instruction-address misaligned trap (cause 0) is still
+raised for misaligned jumps, since `imem_*` never performs a split fetch.
 
-The pipeline uses **two internal memory ports** (Harvard-like structure):
+### 4.4 Dual memory ports
 
-- **Instruction port** (i-port): used by IF stage for instruction fetches
-- **Data port** (d-port): used by MEM stage for loads/stores and page-table walks
+The core uses **two independent memory ports** (Harvard-style):
 
-An **internal arbiter** merges these into a single external memory interface:
+- **Instruction port** (`imem_*`): driven directly by the IF stage, read-only.
+  `imem_req` stays high between fetches; new fetches are signalled by
+  `imem_addr` changing. The slave detects new transactions by address change.
+- **Data port** (`dmem_*`): driven by the MEM stage through `kv32_mem_fe`
+  (§4.3). `dmem_req` is asserted per load/store and deasserted after `dmem_ack`.
 
-**Arbiter priority**:
+There is no internal arbiter. The two ports may be backed by a single memory
+(with an external crossbar that arbitrates between them) or by two independent
+memories (Harvard layout). At SoC integration time, the interconnect is
+responsible for:
 
-1. Data port (d-port) — lower latency, on the critical path of load-use
-2. Page-table walk (MMU, triggered from d-port) — must complete before MEM can proceed
-3. Instruction port (i-port) — stall is cheap (single-cycle bubble)
-
-**Structural hazard**: IF stalls while d-port owns the bus. Pipeline absorbs this
-with a bubble; no special forwarding needed.
-
-The arbiter is a trivial module (~50 lines) that multiplexes request signals and
-routes response signals back to the requesting port.
+- Arbitrating concurrent `imem_*` and `dmem_*` requests. A reasonable priority
+  is `dmem_*` > `imem_*` — the data port is on the critical path of load-use
+  latency, while an IF stall costs only a single-cycle bubble.
+- Routing the winning port's request to the addressed slave and the response
+  back. The core's `*_ack`/`*_rdata`/`*_err` inputs are per-port, so the
+  interconnect must not cross-couple them.
+- Forwarding `*_err` from the addressed slave to the port that owns the
+  transaction. The core does not retry on error (§4.2 rule 6).
 
 ### 4.5 Address space
 
@@ -237,12 +267,12 @@ The CPU drives 32-bit physical addresses on `mem_addr`. Address decoding is
 performed by the SoC's interconnect (Phase 8), not by the CPU. For compatibility
 with standard RISC-V software, the SoC is expected to present the following layout:
 
-| Address range              | Typical use                          |
-|----------------------------|--------------------------------------|
-| 0x0000_0000 – 0x0FFF_FFFF  | Low devices, boot ROM                |
-| 0x1000_0000 – 0x7FFF_FFFF  | Platform MMIO                        |
-| 0x8000_0000 – 0xBFFF_FFFF  | Main RAM (kernel, initramfs, pages)  |
-| 0xC000_0000 – 0xFFFF_FFFF  | High MMIO (PLIC, etc.)               |
+| Address range                | Typical use                            |
+| ---------------------------- | -------------------------------------- |
+| 0x0000_0000 – 0x0FFF_FFFF    | Low devices, boot ROM                  |
+| 0x1000_0000 – 0x7FFF_FFFF    | Platform MMIO                          |
+| 0x8000_0000 – 0xBFFF_FFFF    | Main RAM (kernel, initramfs, pages)    |
+| 0xC000_0000 – 0xFFFF_FFFF    | High MMIO (PLIC, etc.)                 |
 
 **Reset vector**: 0x0000_0000 (parameterizable). First instruction fetch after
 reset targets this address.
@@ -272,13 +302,16 @@ All other addresses pass through to the external memory interface.
 
 ### 4.7 Phase 8: AXI4 adapter
 
-In Phase 8 (SoC integration), an **AXI4 adapter module** translates the simple
-memory interface into a standard AXI4 master port:
+In Phase 8 (SoC integration), an **AXI4 adapter module** translates each of the
+two simple memory ports (§4.1) into a standard AXI4 master port. The two ports
+are typically adapted separately and merged by an AXI interconnect downstream,
+though a single adapter that muxes both into one AXI master is also acceptable
+(in that case the adapter absorbs the §4.4 arbitration role).
 
-- `mem_req` + `mem_gnt` → AR/AW + W channel handshakes
-- `mem_valid` → R/B channel handshakes
-- `mem_excl` → AXI exclusive monitor signals (or serialized RMW)
-- `mem_err` → translated from AXI `rresp`/`bresp` `SLVERR`/`DECERR`
+- `*_req` + `*_ack` → AR/AW + W channel handshakes (one `req`/`ack` pair per beat;
+  no separate `gnt` phase — `ack` is the B/R channel response)
+- `*_excl` → AXI exclusive monitor signals (or serialized RMW)
+- `*_err` → translated from AXI `rresp`/`bresp` `SLVERR`/`DECERR`
 
 The adapter is a ~200–400 line module, mostly a state machine. It preserves the
 simple memory interface contract while exposing AXI4 to the SoC's interconnect.
@@ -352,16 +385,16 @@ External interrupt (`MEI`) raised when any pending+enabled source priority > thr
 
 The CPU core exposes **one external interrupt input pin**, active-high:
 
-| Pin              | Drives `mip` bit | Source (SoC-side)             |
-|------------------|------------------|-------------------------------|
-| `irq_external_i` | MEIP (bit 11)    | PLIC claim non-zero           |
+| Pin                | Drives `mip` bit   | Source (SoC-side)               |
+| ------------------ | ------------------ | ------------------------------- |
+| `irq_external_i`   | MEIP (bit 11)      | PLIC claim non-zero             |
 
 The other two interrupt sources are **internal to the core**:
 
-| Internal signal | Drives `mip` bit | Source (core-internal)        |
-|-----------------|------------------|-------------------------------|
-| `msip_i`        | MSIP (bit 3)     | CLINT `msip` register         |
-| `mtip_i`        | MTIP (bit 7)     | CLINT `mtime >= mtimecmp`     |
+| Internal signal   | Drives `mip` bit   | Source (core-internal)          |
+| ----------------- | ------------------ | ------------------------------- |
+| `msip_i`          | MSIP (bit 3)       | CLINT `msip` register           |
+| `mtip_i`          | MTIP (bit 7)       | CLINT `mtime >= mtimecmp`       |
 
 These internal signals are produced by the integrated CLINT (§5) and sampled
 every cycle. Supervisor-mode interrupts (SSI/STI/SEI) are not separate pins —
@@ -394,7 +427,13 @@ Interrupt taken when:
 | 13    | Load page fault                | Faulting virtual address  |
 | 15    | Store/AMO page fault           | Faulting virtual address  |
 
-**Misaligned access**: Linux expects misaligned loads/stores to work. Implement in hardware via multiple aligned accesses (simpler to verify) or trap-and-emulate in M-mode firmware.
+**Misaligned access**: Linux expects misaligned loads/stores to work. This
+implementation handles them in hardware via `kv32_mem_fe` (§4.3) — cause 4/6
+(load/store address misaligned) is never raised for data accesses. Cause 5/7
+(load/store access fault) is raised only on `dmem_err` from the slave, or on
+the §4.3 address-overflow case. The instruction-address misaligned trap
+(cause 0) is still raised for misaligned jump targets, since `imem_*` never
+performs a split fetch.
 
 **Priority**: Traps are precise. Within a single instruction, exception priority per the spec (breakpoint > instruction page fault > instruction access fault > illegal instruction > address misaligned > load/store faults).
 
@@ -603,7 +642,7 @@ Implemented registers:
 
 ## 14. Implementation Order
 
-1. **Phase 1 — RV32I base**: IF/ID/EX/MEM/WB datapath, register file, ALU, branch, load/store, CSR file (M-mode only), simple memory interface (two ports + arbiter). Run `riscv-tests` M-mode binaries.
+1. **Phase 1 — RV32I base**: IF/ID/EX/MEM/WB datapath, register file, ALU, branch, load/store, CSR file (M-mode only), dual `imem_*`/`dmem_*` memory ports with `kv32_mem_fe` handling sub-word and misaligned data access (§4). Run `riscv-tests` M-mode binaries.
 2. **Phase 2 — M extension**: multiplier (multi-cycle or pipelined), divider. Verify with `rv32mi` tests.
 3. **Phase 3 — C extension**: instruction decompressor (16-bit → 32-bit) at IF output. Verify with `rv32uc`.
 4. **Phase 4 — A extension**: LR/SC with reservation register; AMO operations. `rv32ua` tests.

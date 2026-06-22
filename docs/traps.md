@@ -12,7 +12,7 @@ traps, and delegation are Phase 5 work (SPEC §14).
 
 ## Trap detection (EX stage)
 
-`kv32_core.sv:229-258`, combinational, gated by `!mem_stall` so a stalled
+Combinational detection in `kv32_core.sv`, gated by `!mem_stall` so a stalled
 instruction is not re-evaluated every cycle:
 
 ```systemverilog
@@ -37,7 +37,7 @@ The two illegal-instruction sources are OR'd:
 
 ## Pipeline flush on trap
 
-Trap and taken-branch share the same flush path (`kv32_core.sv:657-669`):
+Trap and taken-branch share the same flush path in `kv32_core.sv`:
 
 ```systemverilog
 assign if_flush = branch_taken || trap_taken;
@@ -48,11 +48,11 @@ assign ex_flush = branch_taken || trap_taken;
 - `if_flush`/`id_flush` clear IF/ID to NOP (`instr_id <= 0x13`,
   `instr_valid_id <= 0`) — 2-cycle penalty.
 - `ex_flush` inserts a bubble into EX (clears all control signals and
-  `instr_valid_ex`, `kv32_core.sv:741-755`). For a trap, this squashes the
+  `instr_valid_ex` in `kv32_core.sv`). For a trap, this squashes the
   faulting instruction so it does not write back. For a branch, it squashes the
   instruction in ID that would have advanced to EX.
 
-**EX/MEM squash** (`kv32_core.sv:821-827`): on `trap_taken` the EX/MEM register
+**EX/MEM squash** in `kv32_core.sv`: on `trap_taken` the EX/MEM register
 additionally clears `reg_write_mem`/`mem_read_mem`/`mem_write_mem`/`rd_mem` and
 `instr_valid_mem`. This is checked against `trap_taken` (not `ex_flush`) so the
 branch in EX can still propagate its own `reg_write` to MEM/WB normally while
@@ -60,7 +60,7 @@ only the trap case squashes the EX→MEM transition.
 
 ## IF redirect
 
-`kv32_core.sv:672-687`. Trap redirect has **highest priority** (above
+IF-stage redirect in `kv32_core.sv`. Trap redirect has **highest priority** (above
 branch-flush and PC increment):
 
 ```systemverilog
@@ -76,7 +76,7 @@ deferred until async interrupt-taking is added.
 
 ## CSR state update on trap
 
-In `kv32_csr.sv:253-259` (top of the write priority chain, see
+At the top of the CSR write priority chain in `kv32_csr.sv` (see
 [csr.md](csr.md#write-priority-chain)):
 
 - `mepc <- {trap_pc[31:1], 1'b0}` (bit0 cleared),
@@ -87,11 +87,11 @@ In `kv32_csr.sv:253-259` (top of the write priority chain, see
 ## MRET
 
 `is_mret_ex` is decoded by the decoder ([decoder.md](decoder.md#system-instructions)). In
-the EX stage it is treated as a "branch to `mepc_out`"
-(`kv32_core.sv:268-270`), so it reuses the branch flush path
+the EX stage it is treated as a "branch to `mepc_out`" in `kv32_core.sv`, so it
+reuses the branch flush path
 (`branch_taken=1`, `if_flush`/`id_flush`/`ex_flush`).
 
-The CSR module's `mret_taken` input is gated in `kv32_core.sv:918`:
+The CSR module's `mret_taken` input is gated in `kv32_core.sv`:
 
 ```systemverilog
 .mret_taken (is_mret_ex && !mem_stall)
@@ -100,11 +100,11 @@ The CSR module's `mret_taken` input is gated in `kv32_core.sv:918`:
 so a stalled MRET does not fire repeatedly. Load-use bubbles clear `is_mret_ex`
 via the ID/EX register, so no extra gate is needed for that path. On `mret_taken`
 the CSR module restores `MIE <- MPIE`, `MPIE <- 1`, `MPP <- 2'b11`
-(`kv32_csr.sv:264-267`).
+in `kv32_csr.sv`.
 
 ## CSR write gating
 
-`csr_wen_gated = csr_wen_ex && !mem_stall` (`kv32_core.sv:222`). The `!mem_stall`
+`csr_wen_gated = csr_wen_ex && !mem_stall` in `kv32_core.sv`. The `!mem_stall`
 gate prevents a CSR instruction stuck behind a stalled MEM from re-writing every
 cycle.
 
@@ -117,7 +117,7 @@ applies to `mret_taken` above.
 
 ## `instr_retired` and `minstret`
 
-`instr_retired = instr_valid_wb && !mem_stall` (`kv32_core.sv:227`). A trapping
+`instr_retired = instr_valid_wb && !mem_stall` in `kv32_core.sv`. A trapping
 instruction is squashed in the EX/MEM register (above), so `instr_valid_mem` and
 thus `instr_valid_wb` are low that cycle — the trapping instruction does not
 count toward `minstret`. See [csr.md](csr.md#counters).

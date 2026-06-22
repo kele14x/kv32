@@ -41,7 +41,7 @@ make unit-test-alu                    # ALU: all 10 ops, edge cases
 make unit-test-regfile                # Regfile: x0, write-during-read, dual-port
 make unit-test-decoder                # Decoder: all opcodes, immediates, CSR variants
 make unit-test-csr                    # CSR: read/write/set/clear, trap, MRET, counters
-make unit-test-mem_arbiter            # Arbiter: priority, zero/multi-cycle, gnt pulse
+make unit-test-mem_fe                 # Memory FE: store positioning, load extraction, misaligned FSM
 ```
 
 Each testbench prints a summary line (`=== tb_<module>: N tests, M failures ===`) and exits non-zero on failure.
@@ -124,7 +124,7 @@ rtl/          SystemVerilog RTL sources
   kv32_alu.sv         Arithmetic/logic unit
   kv32_regfile.sv     32x32-bit register file
   kv32_csr.sv         M-mode CSR register file
-  kv32_mem_arbiter.sv Instruction/data memory mux
+  kv32_mem_fe.sv      Data memory front-end: sub-word positioning, load extraction, misalignment FSM
   kv32_pkg.sv         Shared types and constants
 tb/           Testbenches
   sim_main.cpp        Verilator C++ test driver

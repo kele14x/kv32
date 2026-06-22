@@ -11,13 +11,13 @@ with that module as the Verilator top (`--top-module kv32_<module>`) in a
 separate `build/obj_dir_<module>/`. Each prints
 `=== tb_<module>: N tests, M failures ===` and exits non-zero on failure.
 
-| Testbench | Module | Coverage |
-|-----------|--------|----------|
-| `tb_alu.cpp` | `kv32_alu` | all 10 ALU ops, edge cases (overflow, signed/unsigned, shifts) |
-| `tb_regfile.cpp` | `kv32_regfile` | x0 hardwire, write-then-read, write-during-read, dual-port, `we` gating |
+| Testbench        | Module         | Coverage                                                                                                                                           |
+| ---------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tb_alu.cpp`     | `kv32_alu`     | all 10 ALU ops, edge cases (overflow, signed/unsigned, shifts)                                                                                     |
+| `tb_regfile.cpp` | `kv32_regfile` | x0 hardwire, write-then-read, write-during-read, dual-port, `we` gating                                                                            |
 | `tb_decoder.cpp` | `kv32_decoder` | all opcodes, immediate types, control signals, CSR variants, illegal instructions (bad funct7, invalid funct3 for branch/load/store/JALR/misc-mem) |
-| `tb_csr.cpp` | `kv32_csr` | read/write/set/clear, read-before-write, trap/MRET, counters, `mtvec` MODE masking, write priority chain, `csr_illegal` (unimplemented/read-only) |
-| `tb_mem_arbiter.cpp` | `kv32_mem_arbiter` | d-port priority, zero-latency response, multi-cycle latency, one-cycle `gnt` pulse, latched fields |
+| `tb_csr.cpp`     | `kv32_csr`     | read/write/set/clear, read-before-write, trap/MRET, counters, `mtvec` MODE masking, write priority chain, `csr_illegal` (unimplemented/read-only)  |
+| `tb_mem_fe.cpp`  | `kv32_mem_fe`  | store positioning, load extraction (sign/zero-extend), aligned/misaligned access flows, crossing FSM transitions, reset, error abort               |
 
 Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
 
@@ -29,8 +29,9 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
   byte-enable write support. `bram_base` selects legacy mode (BRAM at
   `0x00000000`) or riscv-tests mode (BRAM at `0x80000000` with a trampoline at
   `0x00000000` that does `LUI`+`JALR` to `bram_entry`).
-- **`mem_responder()`** — drives `mem_gnt`/`mem_valid`/`mem_rdata` to match the
-  req/gnt/valid protocol (SPEC §4.2).
+- **`imem_responder()` / `dmem_responder()`** — drive `*_ack`/`*_rdata` per port
+  to match the req/ack protocol (SPEC §4.2). Each port has independent latency
+  state; both share the same BRAM model.
 - **`read_reg()`** — reads register file state via `rootp->` internal signal
   access.
 - **Built-in test programs** — `TestWord[]` arrays (address + instruction
@@ -40,16 +41,16 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
 
 ### Simulator options
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--binary <path>` | load an ELF or flat binary instead of the built-in test | *(none)* |
-| `--test <name>` | built-in test: `alu`/`0`, `subword`/`1` | `alu` |
-| `--cycles <n>` | max simulation cycles before timeout | `50000` |
-| `--notrace` | disable VCD trace output | *(tracing on)* |
-| `--latency <n>` | memory response latency in cycles (0 = combinational) | `0` |
+| Flag              | Description                                             | Default        |
+| ----------------- | ------------------------------------------------------- | -------------- |
+| `--binary <path>` | load an ELF or flat binary instead of the built-in test | *(none)*       |
+| `--test <name>`   | built-in test: `alu`/`0`, `subword`/`1`                 | `alu`          |
+| `--cycles <n>`    | max simulation cycles before timeout                    | `50000`        |
+| `--notrace`       | disable VCD trace output                                | *(tracing on)* |
+| `--latency <n>`   | memory response latency in cycles (0 = combinational)   | `0`            |
 
-`--latency` is the main knob for exercising the arbiter hold, misalignment wait
-states, and pipeline `mem_stall` paths (see [memory.md](memory.md) and
+`--latency` is the main knob for exercising the `kv32_mem_fe` misalignment FSM
+hold states and the pipeline `mem_stall` paths (see [memory.md](memory.md) and
 [pipeline.md](pipeline.md)).
 
 ## riscv-tests

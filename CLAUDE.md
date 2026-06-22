@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Architectural spec** (pipeline, CSR map, memory interface, privilege modes, MMU, boot flow): [SPEC.md](SPEC.md)
 - **Build commands and user-facing usage**: [README.md](README.md)
-- **Implementation details by topic** (file:line references into the RTL): [docs/index.md](docs/index.md)
+- **Implementation details by topic** (with RTL file references): [docs/index.md](docs/index.md)
 
 ## Project Overview
 
@@ -24,11 +24,11 @@ For the full command list (`make verilator`, `make test-subword`, `make unit-tes
 
 ## Where to Look (implementation topics)
 
-Before editing RTL, read the relevant topic doc — each calls out non-obvious behavior and exact `file:line` locations:
+Before editing RTL, read the relevant topic doc — each calls out non-obvious behavior and points to the relevant RTL files:
 
 - [docs/pipeline.md](docs/pipeline.md) — datapath, forwarding, hazards/stalls, branch/jump
 - [docs/decoder.md](docs/decoder.md) — decode, control signals, illegal-instruction detection
-- [docs/memory.md](docs/memory.md) — interface, arbiter, sub-word access, **misaligned-access state machine**
+- [docs/memory.md](docs/memory.md) — interface, `kv32_mem_fe` sub-word access, **misaligned-access state machine**
 - [docs/csr.md](docs/csr.md) — M-mode CSR file, address map, legality, MRET, counters
 - [docs/traps.md](docs/traps.md) — trap detection, pipeline flush, mtvec redirect, MRET, CSR write-gating loop avoidance
 

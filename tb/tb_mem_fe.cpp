@@ -391,6 +391,303 @@ static void test_crossing_sw11(Vkv32_mem_fe* d) {
     check_eq("SW@11 load rdata", d->rdata, 0x223344AA);
 }
 
+// ---- Comprehensive load extraction (all offsets) ----
+static void test_load_extraction_all_offsets(Vkv32_mem_fe* d) {
+    printf("--- Load extraction (all offsets) ---\n");
+
+    // LB sign-extend at all 4 offsets
+    {
+        uint32_t rdata = 0x7F80FF00;  // bytes: 00, FF, 80, 7F
+        // LB@0 = 0x00000000, LB@1 = 0xFFFFFFFF, LB@2 = 0xFFFFFF80, LB@3 = 0x0000007F
+        uint32_t want[4] = {0x00000000, 0xFFFFFFFF, 0xFFFFFF80, 0x0000007F};
+        for (int off = 0; off < 4; off++) {
+            reset(d);
+            set_inputs(d, 1, 0x1000 + off, 0, 0, 0, 0);  // LB
+            d->dmem_rdata = rdata;
+            d->dmem_ack = 1;
+            d->eval();
+            char label[64];
+            snprintf(label, sizeof(label), "LB@%d sign-extend", off);
+            check_eq(label, d->rdata, want[off]);
+        }
+    }
+
+    // LBU zero-extend at all 4 offsets
+    {
+        uint32_t rdata = 0x7F80FF00;
+        uint32_t want[4] = {0x00000000, 0x000000FF, 0x00000080, 0x0000007F};
+        for (int off = 0; off < 4; off++) {
+            reset(d);
+            set_inputs(d, 1, 0x1000 + off, 0, 0, 0, 4);  // LBU
+            d->dmem_rdata = rdata;
+            d->dmem_ack = 1;
+            d->eval();
+            char label[64];
+            snprintf(label, sizeof(label), "LBU@%d zero-extend", off);
+            check_eq(label, d->rdata, want[off]);
+        }
+    }
+
+    // LH sign-extend at both halfword offsets
+    {
+        // LH@0: low half = 0x8000 (negative) → 0xFFFF8000
+        // LH@2: high half = 0x7FFF (positive) → 0x00007FFF
+        reset(d);
+        set_inputs(d, 1, 0x1000, 0, 1, 0, 1);
+        d->dmem_rdata = 0x7FFF8000;
+        d->dmem_ack = 1;
+        d->eval();
+        check_eq("LH@0 negative", d->rdata, 0xFFFF8000);
+
+        reset(d);
+        set_inputs(d, 1, 0x1002, 0, 1, 0, 1);
+        d->dmem_rdata = 0x7FFF8000;
+        d->dmem_ack = 1;
+        d->eval();
+        check_eq("LH@2 positive", d->rdata, 0x00007FFF);
+    }
+
+    // LHU zero-extend at offset 2
+    {
+        reset(d);
+        set_inputs(d, 1, 0x1002, 0, 1, 0, 5);  // LHU@2
+        d->dmem_rdata = 0xABCD1234;
+        d->dmem_ack = 1;
+        d->eval();
+        check_eq("LHU@2 zero-extend", d->rdata, 0x0000ABCD);
+    }
+}
+
+// ---- Back-to-back transactions (FSM returns to IDLE cleanly) ----
+static void test_back_to_back(Vkv32_mem_fe* d) {
+    printf("--- Back-to-back ---\n");
+    reset(d);
+
+    // Store then immediately load at the same address
+    set_inputs(d, 1, 0x1000, 1, 2, 0xDEADBEEF, 0);  // SW
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("b2b store rdata_valid", d->rdata_valid, 1);
+    check_eq("b2b store err", d->err, 0);
+    tick(d);
+    d->dmem_ack = 0;
+
+    // Next cycle: load at same address, zero-latency
+    set_inputs(d, 1, 0x1000, 0, 2, 0, 2);  // LW
+    d->dmem_rdata = 0xCAFEBABE;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("b2b load rdata_valid", d->rdata_valid, 1);
+    check_eq("b2b load rdata", d->rdata, 0xCAFEBABE);
+    tick(d);
+    d->dmem_ack = 0;
+
+    // Crossing store then aligned load
+    reset(d);
+    set_inputs(d, 1, 0x1003, 1, 1, 0xABCD, 0);  // SH@11 crossing store
+    d->eval();
+    tick(d);  // → MA_FIRST
+    d->dmem_ack = 1; d->eval(); tick(d);
+    d->dmem_ack = 0; tick(d);  // → MA_BETWEEN → MA_SECOND
+    d->dmem_ack = 1; d->eval();
+    check_eq("b2b crossing store rdata_valid", d->rdata_valid, 1);
+    tick(d);
+    d->dmem_ack = 0;
+
+    // Immediately do an aligned load — FSM must be back in IDLE
+    set_inputs(d, 1, 0x2000, 0, 2, 0, 2);
+    d->dmem_rdata = 0x12345678;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("b2b post-crossing load rdata_valid", d->rdata_valid, 1);
+    check_eq("b2b post-crossing load rdata", d->rdata, 0x12345678);
+}
+
+// ---- Error: single-beat (aligned) ----
+static void test_err_single_beat(Vkv32_mem_fe* d) {
+    printf("--- Error: single-beat ---\n");
+    reset(d);
+
+    set_inputs(d, 1, 0x1000, 0, 2, 0, 2);  // LW aligned
+    d->dmem_err = 1;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("single-beat err rdata_valid", d->rdata_valid, 1);
+    check_eq("single-beat err err", d->err, 1);
+    tick(d);
+    d->dmem_err = 0;
+    d->dmem_ack = 0;
+
+    // Verify err is NOT asserted when dmem_err=1 but no ack
+    reset(d);
+    set_inputs(d, 1, 0x1000, 0, 2, 0, 2);
+    d->dmem_err = 1;
+    d->dmem_ack = 0;
+    d->eval();
+    check_eq("single-beat no-ack rdata_valid", d->rdata_valid, 0);
+    check_eq("single-beat no-ack err", d->err, 0);
+}
+
+// ---- Error: first-beat abort on crossing (no second beat issued) ----
+static void test_err_first_beat_abort(Vkv32_mem_fe* d) {
+    printf("--- Error: first-beat abort ---\n");
+    reset(d);
+
+    set_inputs(d, 1, 0x1003, 0, 1, 0, 1);  // SH@11 crossing load
+    d->eval();
+    check_eq("abort cycle0 req", d->dmem_req, 0);  // suppressed in IDLE
+    check_eq("abort cycle0 rdata_valid", d->rdata_valid, 0);
+    check_eq("abort cycle0 err", d->err, 0);
+    tick(d);  // → MA_FIRST
+
+    // MA_FIRST: drive err on ack
+    d->dmem_rdata = 0xDEADBEEF;
+    d->dmem_err = 1;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("abort cycle1 rdata_valid", d->rdata_valid, 1);
+    check_eq("abort cycle1 err", d->err, 1);
+    tick(d);  // → MA_IDLE (abort, not MA_BETWEEN)
+    d->dmem_err = 0;
+    d->dmem_ack = 0;
+
+    // Verify FSM is back in IDLE: a new aligned access should work immediately
+    set_inputs(d, 1, 0x2000, 0, 2, 0, 2);  // LW
+    d->dmem_rdata = 0xCAFEBABE;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("abort recovery rdata_valid", d->rdata_valid, 1);
+    check_eq("abort recovery rdata", d->rdata, 0xCAFEBABE);
+    check_eq("abort recovery err", d->err, 0);
+}
+
+// ---- Error: second-beat on crossing ----
+static void test_err_second_beat(Vkv32_mem_fe* d) {
+    printf("--- Error: second-beat ---\n");
+    reset(d);
+
+    set_inputs(d, 1, 0x1003, 0, 1, 0, 1);  // SH@11 crossing load
+    d->eval();
+    tick(d);  // → MA_FIRST
+
+    // MA_FIRST: success
+    d->dmem_rdata = 0x12345678;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("second-err cycle1 rdata_valid", d->rdata_valid, 0);  // not done yet
+    tick(d);
+    d->dmem_ack = 0;
+
+    // MA_BETWEEN
+    tick(d);  // → MA_SECOND
+
+    // MA_SECOND: err
+    d->dmem_rdata = 0xAABBCCDD;
+    d->dmem_err = 1;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("second-err rdata_valid", d->rdata_valid, 1);
+    check_eq("second-err err", d->err, 1);
+    tick(d);
+    d->dmem_err = 0;
+    d->dmem_ack = 0;
+
+    // Verify recovery
+    set_inputs(d, 1, 0x3000, 0, 2, 0, 2);
+    d->dmem_rdata = 0xBEEF1234;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("second-err recovery rdata_valid", d->rdata_valid, 1);
+    check_eq("second-err recovery err", d->err, 0);
+}
+
+// ---- Error: crossing overflow (aligned_base + 4 wraps past 0xFFFFFFFF) ----
+static void test_err_overflow(Vkv32_mem_fe* d) {
+    printf("--- Error: crossing overflow ---\n");
+    reset(d);
+
+    // SW@0xFFFFFFFD: addr[1:0]=01 (crossing), addr[31:2] all-ones (overflow)
+    set_inputs(d, 1, 0xFFFFFFFD, 0, 2, 0, 2);
+    d->eval();
+    check_eq("overflow req", d->dmem_req, 0);  // no beat issued
+    check_eq("overflow rdata_valid", d->rdata_valid, 1);  // immediate completion
+    check_eq("overflow err", d->err, 1);
+    check_eq("overflow addr", d->dmem_addr, 0xFFFFFFFC);  // aligned_base
+    tick(d);  // FSM stays in IDLE (no MA_FIRST entry)
+
+    // Verify recovery with a normal access
+    d->req = 0;
+    d->eval();
+    set_inputs(d, 1, 0x1000, 0, 2, 0, 2);
+    d->dmem_rdata = 0xCAFEBABE;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("overflow recovery rdata_valid", d->rdata_valid, 1);
+    check_eq("overflow recovery rdata", d->rdata, 0xCAFEBABE);
+    check_eq("overflow recovery err", d->err, 0);
+
+    // Also test SH@0xFFFFFFFF (crossing + overflow)
+    reset(d);
+    set_inputs(d, 1, 0xFFFFFFFF, 1, 1, 0xABCD, 0);  // SH store
+    d->eval();
+    check_eq("overflow SH req", d->dmem_req, 0);
+    check_eq("overflow SH rdata_valid", d->rdata_valid, 1);
+    check_eq("overflow SH err", d->err, 1);
+}
+
+// ---- Crossing access with multi-cycle latency (FSM holds under wait) ----
+static void test_crossing_with_latency(Vkv32_mem_fe* d) {
+    printf("--- Crossing with latency ---\n");
+    reset(d);
+
+    set_inputs(d, 1, 0x1003, 0, 1, 0, 1);  // SH@11 crossing load
+    d->eval();
+    check_eq("lat-cross cycle0 req", d->dmem_req, 0);
+    tick(d);  // → MA_FIRST
+
+    // MA_FIRST: hold for 2 cycles with no ack
+    check_eq("lat-cross cycle1 req", d->dmem_req, 1);
+    check_eq("lat-cross cycle1 rdata_valid", d->rdata_valid, 0);
+    d->dmem_ack = 0;
+    d->eval();
+    tick(d);  // stay in MA_FIRST
+
+    check_eq("lat-cross cycle2 req", d->dmem_req, 1);
+    check_eq("lat-cross cycle2 rdata_valid", d->rdata_valid, 0);
+    tick(d);  // stay in MA_FIRST
+
+    // Now ack the first beat
+    d->dmem_rdata = 0x12345678;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("lat-cross first-ack rdata_valid", d->rdata_valid, 0);  // FIRST→BETWEEN, not done
+    tick(d);
+    d->dmem_ack = 0;
+
+    // MA_BETWEEN
+    check_eq("lat-cross between req", d->dmem_req, 0);
+    tick(d);  // → MA_SECOND
+
+    // MA_SECOND: hold for 2 cycles
+    check_eq("lat-cross cycle5 req", d->dmem_req, 1);
+    check_eq("lat-cross cycle5 addr", d->dmem_addr, 0x1004);
+    check_eq("lat-cross cycle5 rdata_valid", d->rdata_valid, 0);
+    d->dmem_ack = 0;
+    d->eval();
+    tick(d);
+
+    check_eq("lat-cross cycle6 rdata_valid", d->rdata_valid, 0);
+    tick(d);
+
+    // Ack the second beat
+    d->dmem_rdata = 0xAABBCCDD;
+    d->dmem_ack = 1;
+    d->eval();
+    check_eq("lat-cross second-ack rdata_valid", d->rdata_valid, 1);
+    check_eq("lat-cross second-ack rdata", d->rdata, 0xFFFFDD12);
+    tick(d);
+}
+
 // ---- Reset behavior ----
 static void test_reset(Vkv32_mem_fe* d) {
     printf("--- Reset ---\n");
@@ -409,6 +706,7 @@ int main() {
 
     test_store_positioning(d);
     test_load_extraction(d);
+    test_load_extraction_all_offsets(d);
     test_aligned_flow(d);
     test_non_crossing_sh01(d);
     test_crossing_sh11_store(d);
@@ -417,6 +715,12 @@ int main() {
     test_crossing_sw01_load(d);
     test_crossing_sw10(d);
     test_crossing_sw11(d);
+    test_back_to_back(d);
+    test_err_single_beat(d);
+    test_err_first_beat_abort(d);
+    test_err_second_beat(d);
+    test_err_overflow(d);
+    test_crossing_with_latency(d);
     test_reset(d);
 
     delete d;

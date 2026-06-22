@@ -18,10 +18,10 @@ interconnect fabric arbitrates between the two ports.
 
 ### req/ack protocol
 
-| Signal | Direction | Meaning |
-|--------|-----------|---------|
-| `req` | Master → Slave | Transaction requested. Master holds `req` high and keeps address/data stable until `ack`. |
-| `ack` | Slave → Master | Transaction complete. For loads, `rdata` is valid on the same cycle as `ack`. |
+| Signal   | Direction        | Meaning                                                                                     |
+| -------- | ---------------- | ------------------------------------------------------------------------------------------- |
+| `req`    | Master → Slave   | Transaction requested. Master holds `req` high and keeps address/data stable until `ack`.   |
+| `ack`    | Slave → Master   | Transaction complete. For loads, `rdata` is valid on the same cycle as `ack`.               |
 
 A transaction completes when `req && ack`. Zero-latency slaves (combinational
 BRAM) assert `ack` in the same cycle as `req`, so aligned accesses complete in
@@ -57,22 +57,28 @@ transactions. For loads, it returns the extracted and sign/zero-extended value.
 
 ### Upstream interface (core side)
 
-| Signal | Direction | Description |
-|--------|-----------|-------------|
-| `req` | in | Memory operation request (held until `rdata_valid`) |
-| `addr[31:0]` | in | Byte address (ALU result / effective address) |
-| `we` | in | 0=read, 1=store |
-| `size[1:0]` | in | 00=B, 01=H, 10=W |
-| `wdata[31:0]` | in | Raw rs2 value (unpositioned) |
-| `funct3[2:0]` | in | LB/LH/LW/LBU/LHU/SB/SH/SW |
-| `rdata[31:0]` | out | Extracted/sign-extended load result |
-| `rdata_valid` | out | Pulses for one cycle when the operation completes |
-| `err` | out | Bus error from downstream |
+| Signal        | Direction   | Description                                                                                        |
+| ------------- | ----------- | -------------------------------------------------------------------------------------------------- |
+| `req`         | in          | Memory operation request (held until `rdata_valid`)                                                |
+| `addr[31:0]`  | in          | Byte address (ALU result / effective address)                                                      |
+| `we`          | in          | 0=read, 1=store                                                                                    |
+| `size[1:0]`   | in          | 00=B, 01=H, 10=W                                                                                   |
+| `wdata[31:0]` | in          | Raw rs2 value (unpositioned)                                                                       |
+| `funct3[2:0]` | in          | LB/LH/LW/LBU/LHU/SB/SH/SW                                                                          |
+| `rdata[31:0]` | out         | Extracted/sign-extended load result                                                                |
+| `rdata_valid` | out         | Pulses for one cycle when the operation completes                                                  |
+| `err`         | out         | Bus error (gated by `dmem_ack`, or crossing overflow) — meaningful only when `rdata_valid` is high |
 
 ### Downstream interface (bus side)
 
 Standard req/ack protocol: `dmem_req`/`dmem_addr`/`dmem_we`/`dmem_size`/
 `dmem_wdata`/`dmem_be`/`dmem_excl` + `dmem_ack`/`dmem_rdata`/`dmem_err`.
+
+**Split-beat `dmem_size`**: for word-crossing accesses, each beat carries a
+subset of the original bytes. `dmem_size` still reflects the *original* access
+size (e.g. `2'b10` for a split `SW`), not the beat width. `dmem_be` is
+authoritative — slaves must use it for write granularity and must not
+cross-check `dmem_size` against `dmem_addr`/`dmem_be`. See SPEC §4.1.
 
 ### Internal structure
 
@@ -90,18 +96,29 @@ Four functional blocks:
      access, `BE=0110`, address word-aligned).
 
 3. **Alignment handler FSM** (4-state) — splits crossing accesses into two
-   aligned word transactions:
+   aligned word transactions, with early abort on bus error:
 
-   ```
+   ```text
    MA_IDLE → MA_FIRST → MA_BETWEEN → MA_SECOND → MA_IDLE
+                 ↘ (err) → MA_IDLE
    ```
 
-   | State | Action |
-   |-------|--------|
-   | `MA_IDLE` | Detect crossing. If `word_crossing`, latch offset/size, suppress `dmem_req`, go `MA_FIRST`. Inline path for `non_crossing_ma` and aligned accesses. |
-   | `MA_FIRST` | Drive first aligned access (word-aligned addr, `first_be`/`first_wdata`). On `dmem_ack`, latch `ma_first_rdata`, go `MA_BETWEEN`. |
-   | `MA_BETWEEN` | 1-cycle gap: `dmem_req=0`. Unconditional transition to `MA_SECOND`. |
-   | `MA_SECOND` | Drive second aligned access (addr+4, `second_be`/`second_wdata`). On `dmem_ack`, go `MA_IDLE`. |
+   - **`MA_IDLE`** — detect crossing:
+     - `crossing_overflow` (second beat would wrap past `0xFFFFFFFF`): assert
+       `err` + `rdata_valid` inline, no beat issued.
+     - `word_crossing && !crossing_overflow`: latch offset/size, suppress
+       `dmem_req`, go `MA_FIRST`.
+     - Otherwise inline passthrough for `non_crossing_ma` and aligned accesses.
+   - **`MA_FIRST`** — drive first aligned access (word-aligned addr,
+     `first_be`/`first_wdata`). On `dmem_ack`:
+     - `dmem_err`: abort to `MA_IDLE` (no second beat, `err` + `rdata_valid`
+       pulse).
+     - otherwise: latch `ma_first_rdata`, go `MA_BETWEEN`.
+   - **`MA_BETWEEN`** — 1-cycle gap (`dmem_req=0`). Unconditional transition to
+     `MA_SECOND`.
+   - **`MA_SECOND`** — drive second aligned access (addr+4,
+     `second_be`/`second_wdata`). On `dmem_ack`, go `MA_IDLE` (success or err
+     both return).
 
 4. **Load data extraction** — selects and extends the correct bytes from the
    bus word based on `funct3` and `addr[1:0]`. For crossing loads, stitches
@@ -112,11 +129,11 @@ Four functional blocks:
 The core passes raw `fwd_b` (unpositioned rs2) to the mem_fe. The mem_fe
 computes byte enables and data positioning:
 
-| `size` | Insn | BE / wdata |
-|--------|------|------------|
-| 00 | SB | One byte lane by `addr[1:0]`; `wdata[7:0]` shifted into lane |
-| 01 | SH | Two byte lanes by `addr[1]`; `wdata[15:0]` in low or high half |
-| 10 | SW | `BE=4'b1111`, `wdata` passthrough |
+| `size`   | Insn   | BE / wdata                                                       |
+| -------- | ------ | ---------------------------------------------------------------- |
+| 00       | SB     | One byte lane by `addr[1:0]`; `wdata[7:0]` shifted into lane     |
+| 01       | SH     | Two byte lanes by `addr[1]`; `wdata[15:0]` in low or high half   |
+| 10       | SW     | `BE=4'b1111`, `wdata` passthrough                                |
 
 For crossing stores, `raw_hw = wdata[15:0]` (the halfword is always in the low
 16 bits since the core passes raw rs2). First access puts the low byte in the
@@ -129,13 +146,13 @@ Load data extraction uses the original (unaligned) `addr[1:0]` for byte
 selection. The crossing stitch and non-crossing shift pre-position the data so
 the standard extraction logic works uniformly:
 
-| `funct3` | Insn | Selection | Extension |
-|-----------|------|-----------|-----------|
-| 000 | LB | byte by `addr[1:0]` | sign |
-| 001 | LH | half by `addr[1]` | sign |
-| 010 | LW | full word | — |
-| 100 | LBU | byte by `addr[1:0]` | zero |
-| 101 | LHU | half by `addr[1]` | zero |
+| `funct3`    | Insn   | Selection           | Extension   |
+| ----------- | ------ | ------------------- | ----------- |
+| 000         | LB     | byte by `addr[1:0]` | sign        |
+| 001         | LH     | half by `addr[1]`   | sign        |
+| 010         | LW     | full word           | —           |
+| 100         | LBU    | byte by `addr[1:0]` | zero        |
+| 101         | LHU    | half by `addr[1]`   | zero        |
 
 ### Key gotcha: `non_crossing_ma` invariant
 
