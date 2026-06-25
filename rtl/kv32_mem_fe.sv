@@ -8,9 +8,9 @@
 //   req held high until rdata_valid. addr/we/size/wdata/funct3 stable.
 //   rdata_valid pulses for one cycle when the operation completes.
 //
-// Downstream protocol (bus side): req/ack
-//   dmem_req held high until dmem_ack. For loads, dmem_rdata is valid
-//   on the same cycle as dmem_ack.
+// Downstream protocol (bus side): req/gnt/ack
+//   dmem_req is held high until dmem_gnt accepts the beat. dmem_ack then
+//   returns the response later (possibly in the same cycle for zero-latency).
 //
 // Misalignment handling:
 //   - Naturally aligned: single bus transaction, passthrough.
@@ -35,7 +35,7 @@ module kv32_mem_fe (
     output logic        rdata_valid,
     output logic        err,
 
-    // Downstream: to/from external dmem bus (req/ack protocol)
+    // Downstream: to/from external dmem bus (req/gnt/ack protocol)
     output logic        dmem_req,
     output logic [31:0] dmem_addr,
     output logic        dmem_we,
@@ -45,6 +45,7 @@ module kv32_mem_fe (
     // verilator lint_off UNUSEDSIGNAL
     output logic        dmem_excl,
     // verilator lint_on UNUSEDSIGNAL
+    input  logic        dmem_gnt,
     input  logic        dmem_ack,
     input  logic [31:0] dmem_rdata,
     input  logic        dmem_err
@@ -208,27 +209,27 @@ module kv32_mem_fe (
   end
 
   // -------------------------------------------------------------------------
-  // Alignment handler FSM (4-state, req/ack protocol)
+  // Alignment handler FSM (5-state, req/gnt/ack protocol)
   //
-  // IDLE    → aligned/non-crossing passthrough, crossing overflow (err inline),
-  //           or detect crossing → FIRST
-  // FIRST   → first access in flight, hold dmem_req until dmem_ack.
-  //           On dmem_ack: if dmem_err, abort to IDLE (no second beat);
-  //           else latch rdata → BETWEEN.
-  // BETWEEN → 1-cycle gap (dmem_req deasserted), first rdata latched.
-  // SECOND  → second access in flight, hold dmem_req until dmem_ack → IDLE
-  //           (success or err both return to IDLE).
+  // IDLE        → aligned/non-crossing beat, crossing overflow (err inline),
+  //               or crossing first beat.
+  // SINGLE_WAIT → single-beat request accepted, waiting for ack.
+  // FIRST_WAIT  → first crossing beat accepted, waiting for its ack.
+  // SECOND_REQ  → second beat pending grant.
+  // SECOND_WAIT → second beat accepted, waiting for ack.
   // -------------------------------------------------------------------------
-  typedef enum logic [1:0] {
+  typedef enum logic [2:0] {
     MA_IDLE,
-    MA_FIRST,
-    MA_BETWEEN,
-    MA_SECOND
+    MA_SINGLE_WAIT,
+    MA_FIRST_WAIT,
+    MA_SECOND_REQ,
+    MA_SECOND_WAIT
   } ma_state_t;
 
   // verilator lint_off UNUSEDSIGNAL
   ma_state_t ma_state;
   logic [31:0] ma_first_rdata;  // [7:0] unused — crossing stitch only reads upper bytes
+  logic [31:0] ma_base;
   logic [1:0] ma_offset;
   logic [1:0] ma_size;
   // verilator lint_on UNUSEDSIGNAL
@@ -236,6 +237,27 @@ module kv32_mem_fe (
   // Word-aligned base address for crossing accesses
   logic [31:0] aligned_base;
   assign aligned_base = {addr[31:2], 2'b00};
+
+  logic single_beat;
+  logic single_accept;
+  logic single_complete;
+  logic first_accept;
+  logic first_complete;
+  logic second_complete;
+  logic crossing_first_inline;
+
+  assign single_beat          = req && !word_crossing && !crossing_overflow;
+  assign single_accept        = (ma_state == MA_IDLE) && single_beat && dmem_gnt;
+  assign single_complete      = (single_accept && dmem_ack) ||
+                                ((ma_state == MA_SINGLE_WAIT) && dmem_ack);
+  assign first_accept         = (ma_state == MA_IDLE) && req && word_crossing &&
+                                !crossing_overflow && dmem_gnt;
+  assign first_complete       = (first_accept && dmem_ack) ||
+                                ((ma_state == MA_FIRST_WAIT) && dmem_ack);
+  assign second_complete      = ((ma_state == MA_SECOND_REQ) && dmem_gnt && dmem_ack) ||
+                                ((ma_state == MA_SECOND_WAIT) && dmem_ack);
+  assign crossing_first_inline = (ma_state == MA_IDLE) && req && word_crossing &&
+                                 !crossing_overflow && dmem_gnt && dmem_ack;
 
   // Downstream bus signals (muxed by FSM state)
   //
@@ -245,8 +267,7 @@ module kv32_mem_fe (
   // the beat width. Slaves must use dmem_be for write granularity and must not
   // cross-check dmem_size against dmem_addr/dmem_be. See SPEC §4.1.
   always_comb begin
-    // Default: aligned passthrough
-    dmem_req   = req;
+    dmem_req   = 1'b0;
     dmem_addr  = addr;
     dmem_we    = we;
     dmem_size  = size;
@@ -256,44 +277,52 @@ module kv32_mem_fe (
 
     unique case (ma_state)
       MA_IDLE: begin
-        if (crossing_overflow) begin
-          // Overflow: don't issue any beat, report err via rdata_valid.
-          dmem_req  = 1'b0;
-          dmem_addr = aligned_base;
-        end else if (non_crossing_ma) begin
-          // SH at offset 1: both bytes in same word, no splitting
-          dmem_addr = aligned_base;
-          dmem_be   = 4'b0110;
-          if (we) dmem_wdata = {wdata[23:0], 8'h0};
-        end else if (word_crossing) begin
-          // Crossing detected — suppress request this cycle, FSM enters FIRST
-          dmem_req  = 1'b0;
-          dmem_addr = aligned_base;
-          dmem_be   = first_be;
-          if (we) dmem_wdata = first_wdata;
+        if (req) begin
+          dmem_we   = we;
+          dmem_size = size;
+          if (crossing_overflow) begin
+            dmem_addr = aligned_base;
+          end else if (word_crossing) begin
+            dmem_req   = 1'b1;
+            dmem_addr  = aligned_base;
+            dmem_wdata = first_wdata;
+            dmem_be    = first_be;
+          end else begin
+            dmem_req = 1'b1;
+            if (non_crossing_ma) begin
+              dmem_addr = aligned_base;
+              dmem_be   = 4'b0110;
+              if (we) dmem_wdata = {wdata[23:0], 8'h0};
+            end
+          end
         end
       end
 
-      MA_FIRST: begin
-        dmem_req  = req;
-        dmem_addr = aligned_base;
-        dmem_be   = first_be;
-        if (we) dmem_wdata = first_wdata;
+      MA_SINGLE_WAIT: begin
+        dmem_addr = addr;
+        dmem_we   = we;
+        dmem_size = size;
       end
 
-      MA_BETWEEN: begin
-        // 1-cycle gap between accesses
-        dmem_req  = 1'b0;
-        dmem_addr = aligned_base;
-        dmem_be   = first_be;
-        if (we) dmem_wdata = first_wdata;
+      MA_FIRST_WAIT: begin
+        dmem_addr = ma_base;
+        dmem_we   = we;
+        dmem_size = ma_size;
       end
 
-      MA_SECOND: begin
+      MA_SECOND_REQ: begin
         dmem_req   = req;
-        dmem_addr  = aligned_base + 32'd4;
+        dmem_addr  = ma_base + 32'd4;
+        dmem_we    = we;
+        dmem_size  = ma_size;
         dmem_wdata = second_wdata;
         dmem_be    = second_be;
+      end
+
+      MA_SECOND_WAIT: begin
+        dmem_addr = ma_base + 32'd4;
+        dmem_we   = we;
+        dmem_size = ma_size;
       end
 
       default: ;
@@ -305,39 +334,61 @@ module kv32_mem_fe (
     if (!rst_n) begin
       ma_state       <= MA_IDLE;
       ma_first_rdata <= 32'h0;
+      ma_base        <= 32'h0;
       ma_offset      <= 2'b00;
       ma_size        <= 2'b00;
     end else begin
       unique case (ma_state)
         MA_IDLE: begin
-          // Enter FIRST only for a real crossing that doesn't overflow.
-          // Overflow is reported inline in IDLE (err + rdata_valid, no beat).
-          if (word_crossing && !crossing_overflow) begin
-            ma_state  <= MA_FIRST;
+          if (req && word_crossing && !crossing_overflow) begin
+            ma_base   <= aligned_base;
             ma_offset <= addr[1:0];
             ma_size   <= size;
+            if (dmem_gnt) begin
+              if (dmem_ack) begin
+                if (dmem_err) begin
+                  ma_state <= MA_IDLE;
+                end else begin
+                  ma_first_rdata <= dmem_rdata;
+                  ma_state       <= MA_SECOND_REQ;
+                end
+              end else begin
+                ma_state <= MA_FIRST_WAIT;
+              end
+            end
+          end else if (single_beat && dmem_gnt && !dmem_ack) begin
+            ma_state <= MA_SINGLE_WAIT;
           end
         end
 
-        MA_FIRST: begin
+        MA_SINGLE_WAIT: begin
+          if (dmem_ack) begin
+            ma_state <= MA_IDLE;
+          end
+        end
+
+        MA_FIRST_WAIT: begin
           if (dmem_ack) begin
             if (dmem_err) begin
-              // First beat errored — abort, do not issue the second beat.
-              // rdata_valid + err pulse this cycle; core sees the fault.
               ma_state <= MA_IDLE;
             end else begin
-              ma_state       <= MA_BETWEEN;
               ma_first_rdata <= dmem_rdata;
+              ma_state <= MA_SECOND_REQ;
             end
           end
         end
 
-        MA_BETWEEN: begin
-          ma_state <= MA_SECOND;
+        MA_SECOND_REQ: begin
+          if (dmem_gnt) begin
+            if (dmem_ack) begin
+              ma_state <= MA_IDLE;
+            end else begin
+              ma_state <= MA_SECOND_WAIT;
+            end
+          end
         end
 
-        MA_SECOND: begin
-          // Second beat done (success or err) — return to IDLE.
+        MA_SECOND_WAIT: begin
           if (dmem_ack) begin
             ma_state <= MA_IDLE;
           end
@@ -366,7 +417,7 @@ module kv32_mem_fe (
     raw_rdata = dmem_rdata;
 
     // Stitched data for crossing accesses
-    if (ma_state == MA_SECOND && dmem_ack) begin
+    if (second_complete) begin
       unique case (ma_size)
         2'b01: begin  // Halfword (addr[1:0]=11 only)
           raw_rdata = {dmem_rdata[7:0], ma_first_rdata[31:24], 16'h0};
@@ -386,7 +437,7 @@ module kv32_mem_fe (
     // Non-crossing misaligned: only SH@addr[1:0]=01 reaches here.
     // Shift right by 8 so the LH extractor (keyed on addr[1]=0)
     // picks up bytes 1,2 as the low halfword.
-    if (non_crossing_ma && !we && dmem_ack) begin
+    if ((single_complete || crossing_first_inline) && non_crossing_ma && !we) begin
       raw_rdata = {8'h0, dmem_rdata[31:8]};
     end
   end
@@ -440,21 +491,24 @@ module kv32_mem_fe (
   // Output logic
   //
   // rdata_valid pulses for one cycle when the operation completes:
-  //   - aligned / non-crossing: req && dmem_ack in IDLE
+  //   - aligned / non-crossing: single-beat ack
   //   - crossing overflow: detected in IDLE, no beat issued (err path)
-  //   - crossing first-beat err: MA_FIRST && dmem_ack && dmem_err (abort)
-  //   - crossing second-beat: MA_SECOND && dmem_ack (success or err)
+  //   - crossing first-beat err: first ack with dmem_err (abort)
+  //   - crossing second-beat: second-beat ack (success or err)
   //
   // err is meaningful only alongside rdata_valid. It fires on:
   //   - any dmem_ack with dmem_err (single-beat, first-beat abort, second-beat)
   //   - crossing overflow (no beat issued)
   // -------------------------------------------------------------------------
-  assign rdata_valid = (ma_state == MA_IDLE && dmem_req && dmem_ack) ||
-                       (ma_state == MA_IDLE && crossing_overflow) ||
-                       (ma_state == MA_FIRST && dmem_ack && dmem_err) ||
-                       (ma_state == MA_SECOND && dmem_ack);
+  assign rdata_valid = single_complete ||
+                       ((ma_state == MA_IDLE) && crossing_overflow) ||
+                       (first_complete && dmem_err) ||
+                       second_complete;
 
-  assign err = crossing_overflow || (dmem_ack && dmem_err && ma_state != MA_BETWEEN);
+  assign err = ((ma_state == MA_IDLE) && crossing_overflow) ||
+               (single_complete && dmem_err) ||
+               (first_complete && dmem_err) ||
+               (second_complete && dmem_err);
 
   assign rdata = extracted;
 

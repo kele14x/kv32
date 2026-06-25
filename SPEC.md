@@ -134,7 +134,7 @@ Access gated by `mstatus.FS`. FS=Off causes illegal-instruction trap.
 
 ## 4. Memory Interface
 
-The CPU core exposes **two independent memory ports** using a simple **req/ack**
+The CPU core exposes **two independent memory ports** using a **req/gnt/ack**
 handshake: `imem_*` for instruction fetch and `dmem_*` for data load/store. The
 two ports share no internal resource — at SoC integration time an external
 crossbar or interconnect fabric arbitrates between them. In Phase 8, an AXI4
@@ -151,45 +151,56 @@ misaligned traps cause 0).
 
 Each port uses the same signal set, prefixed `imem_` or `dmem_`.
 
-**Request signals** (master → slave, held stable from `req` assertion until `ack`):
+**Request signals** (master → slave, held stable from `req` assertion until acceptance):
 
-| Signal       | Width | Purpose                                                                                                                                                                                                                                            |
-| ------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `*_req`      | 1     | Master has a transaction pending. Held high until `ack`.                                                                                                                                                                                           |
-| `*_addr`     | 32    | Byte address. The slave must word-align externally if it requires word-addressed access (the core may drive unaligned addresses on `dmem_*` — see §4.3).                                                                                           |
-| `*_we`       | 1     | 0 = read, 1 = write                                                                                                                                                                                                                                |
-| `*_size`     | 2     | `00` = byte, `01` = half, `10` = word. Informational — `*_be` is authoritative. On `dmem_*` split beats from a misaligned access, `*_size` reflects the original access size, not the beat width; the slave must use `*_be` for write granularity. |
-| `*_wdata`    | 32    | Write data, positioned per `*_be`                                                                                                                                                                                                                  |
-| `*_be`       | 4     | Byte enable strobes — **authoritative** for write granularity                                                                                                                                                                                      |
-| `*_excl`     | 1     | Exclusive access hint (LR/SC, Phase 4; tied to 0 in Phases 1-3)                                                                                                                                                                                    |
+| Signal    | Width | Purpose                                                         |
+| --------- | ----- | --------------------------------------------------------------- |
+| `*_req`   | 1     | Transaction pending; held high until `gnt` accepts the request  |
+| `*_addr`  | 32    | Byte address                                                    |
+| `*_we`    | 1     | 0 = read, 1 = write                                             |
+| `*_size`  | 2     | `00` = byte, `01` = half, `10` = word (informational)           |
+| `*_wdata` | 32    | Write data, positioned per `*_be`                               |
+| `*_be`    | 4     | Byte enable strobes (**authoritative** for write granularity)   |
+| `*_excl`  | 1     | Exclusive access hint (LR/SC, Phase 4; tied to 0 in Phases 1–3) |
+| `*_gnt`   | 1     | Slave accepts the currently presented request this cycle         |
 
-**Response signals** (slave → master, on the same cycle the transaction completes):
+Notes on request signals:
 
-| Signal      | Width | Purpose                                                                                      |
-| ----------- | ----- | -------------------------------------------------------------------------------------------- |
-| `*_ack`     | 1     | Transaction complete this cycle. For loads, `*_rdata` is valid on the same cycle as `*_ack`. |
-| `*_rdata`   | 32    | Read data (undefined on writes or when `ack=0`)                                              |
-| `*_err`     | 1     | Transaction failed — raises load/store access-fault exception (§7.2, cause 5/7)              |
+- **`*_addr`**: the slave must word-align externally if it requires word-addressed access; the core may drive unaligned addresses on `dmem_*` (see §4.3).
+- **`*_size`**: informational only — `*_be` is authoritative. On `dmem_*` split beats from a misaligned access, `*_size` reflects the original access size, not the beat width; the slave must use `*_be` for write granularity.
+
+**Response signals** (slave → master, on the cycle the accepted request completes):
+
+| Signal    | Width | Purpose                                                                         |
+| --------- | ----- | ------------------------------------------------------------------------------- |
+| `*_ack`   | 1     | Transaction complete this cycle                                                 |
+| `*_rdata` | 32    | Read data (undefined on writes or when `ack=0`)                                 |
+| `*_err`   | 1     | Transaction failed — raises load/store access-fault exception (§7.2, cause 5/7) |
+
+Note on response signals:
+
+- **`*_ack`**: for loads, `*_rdata` is valid on the same cycle as `*_ack`.
 
 ### 4.2 Protocol rules
 
-1. **Handshake**: a transaction completes on any cycle where `*_req=1` AND
-   `*_ack=1`. The master must hold all request signals stable from the cycle it
-   asserts `*_req` until it sees `*_ack`.
+1. **Request acceptance**: a request is accepted on any cycle where `*_req=1`
+   AND `*_gnt=1`. The master must hold all request signals stable from the cycle
+   it asserts `*_req` until the acceptance edge.
 
 2. **No mid-flight cancellation**: once `*_req=1`, the master cannot retract.
-   The slave will eventually `ack` it (possibly immediately).
+   The slave may delay `*_gnt`, but once the request is accepted it must
+   eventually return exactly one `*_ack` pulse for that request.
 
-3. **One outstanding transaction per port**: the master cannot issue a new
-   `*_req` on a given port until it has seen `*_ack` for the previous one. The
-   two ports are independent — `imem_*` and `dmem_*` may have transactions
-   outstanding simultaneously, to be arbitrated by the SoC interconnect.
-   (Pipelining with N outstanding transactions per port is deferred to Phase 8
-   if needed.)
+3. **One outstanding transaction per port**: the outstanding count for a port
+   increments on `*_req && *_gnt` and decrements on `*_ack`. The port must never
+   exceed one outstanding request. A master may keep `*_req` asserted while a
+   response is pending, but the slave must only assert `*_gnt` when doing so
+   would keep the outstanding count at 0 or 1 (for example, `*_gnt` may coincide
+   with `*_ack` to accept the next request back-to-back).
 
-4. **Variable latency**: `*_ack` may arrive 0, 1, or many cycles after `*_req`.
-   Zero-latency is legal (`*_ack` in the same cycle as `*_req` — typical for
-   combinational BRAM-backed responders).
+4. **Variable latency**: `*_ack` may arrive 0, 1, or many cycles after the
+   request is accepted. Zero-latency is legal: `*_req && *_gnt && *_ack` may all
+   occur in the same cycle.
 
 5. **Write semantics**: writes are committed on `*_ack` (the slave has accepted
    responsibility for the data). For writes, `*_rdata` is undefined.
@@ -242,10 +253,11 @@ raised for misaligned jumps, since `imem_*` never performs a split fetch.
 The core uses **two independent memory ports** (Harvard-style):
 
 - **Instruction port** (`imem_*`): driven directly by the IF stage, read-only.
-  `imem_req` stays high between fetches; new fetches are signalled by
-  `imem_addr` changing. The slave detects new transactions by address change.
+  The IF side presents one request at a time and buffers returned instructions so
+  fetch responses can arrive while the pipeline is stalled.
 - **Data port** (`dmem_*`): driven by the MEM stage through `kv32_mem_fe`
-  (§4.3). `dmem_req` is asserted per load/store and deasserted after `dmem_ack`.
+  (§4.3). `dmem_req` is asserted until each beat is granted; completion is
+  reported later with `dmem_ack`.
 
 There is no internal arbiter. The two ports may be backed by a single memory
 (with an external crossbar that arbitrates between them) or by two independent
@@ -256,7 +268,7 @@ responsible for:
   is `dmem_*` > `imem_*` — the data port is on the critical path of load-use
   latency, while an IF stall costs only a single-cycle bubble.
 - Routing the winning port's request to the addressed slave and the response
-  back. The core's `*_ack`/`*_rdata`/`*_err` inputs are per-port, so the
+  back. The core's `*_gnt`/`*_ack`/`*_rdata`/`*_err` inputs are per-port, so the
   interconnect must not cross-couple them.
 - Forwarding `*_err` from the addressed slave to the port that owns the
   transaction. The core does not retry on error (§4.2 rule 6).
@@ -308,8 +320,8 @@ are typically adapted separately and merged by an AXI interconnect downstream,
 though a single adapter that muxes both into one AXI master is also acceptable
 (in that case the adapter absorbs the §4.4 arbitration role).
 
-- `*_req` + `*_ack` → AR/AW + W channel handshakes (one `req`/`ack` pair per beat;
-  no separate `gnt` phase — `ack` is the B/R channel response)
+- `*_req` + `*_gnt` → AR/AW + W channel handshakes (address/data acceptance)
+- `*_ack` → B/R channel response (completion for the accepted beat)
 - `*_excl` → AXI exclusive monitor signals (or serialized RMW)
 - `*_err` → translated from AXI `rresp`/`bresp` `SLVERR`/`DECERR`
 
@@ -456,10 +468,10 @@ Linux typically uses vectored mode.
 - PTE is 32 bits:
 
 ```text
- 31        20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-+-----------+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-| PPN[1]    |PPN[0]   |RSW| D | A | G | U | X | W | R | V |
-+-----------+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+ 31                  20 19          10 9  8 7   6   5   4   3   2   1   0
++----------------------+--------------+----+---+---+---+---+---+---+---+---+
+| PPN[1]               | PPN[0]       |RSW | D | A | G | U | X | W | R | V |
++----------------------+--------------+----+---+---+---+---+---+---+---+---+
 ```
 
 - V=0: invalid

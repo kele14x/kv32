@@ -7,7 +7,7 @@ module kv32_core
     input logic irq_timer_i,
     input logic irq_software_i,
 
-    // Instruction memory interface (req/ack protocol)
+    // Instruction memory interface (req/gnt/ack protocol)
     output logic        imem_req,
     output logic [31:0] imem_addr,
     output logic        imem_we,
@@ -15,11 +15,12 @@ module kv32_core
     output logic [31:0] imem_wdata,
     output logic [ 3:0] imem_be,
     output logic        imem_excl,
+    input  logic        imem_gnt,
     input  logic        imem_ack,
     input  logic [31:0] imem_rdata,
     input  logic        imem_err,
 
-    // Data memory interface (req/ack protocol, through kv32_mem_fe)
+    // Data memory interface (req/gnt/ack protocol, through kv32_mem_fe)
     output logic        dmem_req,
     output logic [31:0] dmem_addr,
     output logic        dmem_we,
@@ -27,6 +28,7 @@ module kv32_core
     output logic [31:0] dmem_wdata,
     output logic [ 3:0] dmem_be,
     output logic        dmem_excl,
+    input  logic        dmem_gnt,
     input  logic        dmem_ack,
     input  logic [31:0] dmem_rdata,
     input  logic        dmem_err
@@ -40,6 +42,13 @@ module kv32_core
   logic [31:0] d_wdata;
   logic        i_valid;
   logic [31:0] i_rdata;
+  logic [31:0] i_pc_data;
+  logic        i_wait_resp;
+  logic        i_buf_valid;
+  logic [31:0] i_buf_pc, i_buf_instr;
+  logic        i_drop_resp;
+  logic        i_redirect_pending;
+  logic [31:0] i_redirect_pc;
 
   // Error signals reserved for exception handling (Phase 5)
   // verilator lint_off UNUSEDSIGNAL
@@ -54,15 +63,16 @@ module kv32_core
   // verilator lint_on UNUSEDSIGNAL
 
   // Instruction memory: direct passthrough from IF stage
-  assign imem_req   = i_req;
+  assign imem_req   = i_req && !i_wait_resp;
   assign imem_addr  = i_addr;
   assign imem_we    = 1'b0;
   assign imem_size  = 2'b10;  // always word
   assign imem_wdata = 32'h0;
   assign imem_be    = 4'hF;
   assign imem_excl  = 1'b0;
-  assign i_valid    = imem_ack;
-  assign i_rdata    = imem_rdata;
+  assign i_valid    = i_buf_valid;
+  assign i_rdata    = i_buf_instr;
+  assign i_pc_data  = i_buf_pc;
   assign i_err      = imem_err;
 
   // Data memory front-end: handles alignment, sub-word positioning,
@@ -86,6 +96,7 @@ module kv32_core
       .dmem_wdata (dmem_wdata),
       .dmem_be    (dmem_be),
       .dmem_excl  (dmem_excl),
+      .dmem_gnt   (dmem_gnt),
       .dmem_ack   (dmem_ack),
       .dmem_rdata (dmem_rdata),
       .dmem_err   (dmem_err)
@@ -213,8 +224,11 @@ module kv32_core
   // Pipeline control signals (declared here, before first use, because
   // iverilog does not forward-reference signals declared later in the
   // module. The assigns for these live further down in "Pipeline control".)
-  logic if_stall, id_stall, ex_stall, mem_stall;
-  logic if_flush, id_flush, ex_flush;
+  // verilator lint_off UNUSEDSIGNAL
+  logic if_stall, if_flush;
+  // verilator lint_on UNUSEDSIGNAL
+  logic id_stall, ex_stall, mem_stall;
+  logic id_flush, ex_flush;
   logic load_use_hazard, if_wait;
 
   assign csr_addr_w    = instr_ex[31:20];
@@ -376,8 +390,8 @@ module kv32_core
   // Hazard detection: stall if EX stage has a load and ID stage uses its result
   assign load_use_hazard = mem_read_ex && rd_ex != 5'h0 && ((rd_ex == rs1_id) || (rd_ex == rs2_id));
 
-  // IF wait: instruction fetch requested but not yet completed
-  assign if_wait = i_req && !i_valid;
+  // IF wait: instruction fetch pending grant/response with no buffered result.
+  assign if_wait = (i_req || i_wait_resp) && !i_valid;
 
   // MEM stalls when waiting for data memory response
   assign mem_stall = (mem_read_mem || mem_write_mem) && !fe_rdata_valid;
@@ -406,16 +420,61 @@ module kv32_core
     if (!rst_n) begin
       pc_if <= 32'h0;
       i_req <= 1'b1;
-    end else if (trap_taken) begin
-      // Trap: redirect to mtvec (highest priority)
-      pc_if <= {mtvec_out[31:2], 2'b00};  // MODE=Direct: jump to BASE
-      i_req <= 1'b1;
-    end else if (if_flush) begin
-      pc_if <= branch_target;
-      i_req <= 1'b1;
-    end else if (!if_stall) begin
-      pc_if <= pc_if + 4;
-      i_req <= 1'b1;
+      i_wait_resp <= 1'b0;
+      i_buf_valid <= 1'b0;
+      i_buf_pc <= 32'h0;
+      i_buf_instr <= 32'h0;
+      i_drop_resp <= 1'b0;
+      i_redirect_pending <= 1'b0;
+      i_redirect_pc <= 32'h0;
+    end else begin
+      if (i_buf_valid && !id_stall && !id_flush) begin
+        i_buf_valid <= 1'b0;
+        if (!i_req && !i_wait_resp && !i_redirect_pending) begin
+          pc_if <= pc_if + 32'd4;
+          i_req <= 1'b1;
+        end
+      end
+
+      if (trap_taken || branch_taken) begin
+        i_buf_valid <= 1'b0;
+        if (i_req || i_wait_resp) begin
+          i_drop_resp <= 1'b1;
+          i_redirect_pending <= 1'b1;
+          i_redirect_pc <= trap_taken ? {mtvec_out[31:2], 2'b00} : branch_target;
+        end else begin
+          pc_if <= trap_taken ? {mtvec_out[31:2], 2'b00} : branch_target;
+          i_req <= 1'b1;
+          i_wait_resp <= 1'b0;
+          i_drop_resp <= 1'b0;
+          i_redirect_pending <= 1'b0;
+        end
+      end
+
+      if (!i_buf_valid && imem_ack) begin
+        i_wait_resp <= 1'b0;
+        if (i_drop_resp || trap_taken || branch_taken) begin
+          i_drop_resp <= 1'b0;
+          if (i_redirect_pending || trap_taken || branch_taken) begin
+            pc_if <= trap_taken ? {mtvec_out[31:2], 2'b00}
+                                : (branch_taken ? branch_target : i_redirect_pc);
+            i_req <= 1'b1;
+            i_redirect_pending <= 1'b0;
+          end else begin
+            i_req <= 1'b0;
+          end
+        end else begin
+          i_buf_valid <= 1'b1;
+          i_buf_pc <= pc_if;
+          i_buf_instr <= imem_rdata;
+          i_req <= 1'b0;
+        end
+      end else if (!i_buf_valid && i_req && imem_gnt) begin
+        i_req <= 1'b0;
+        i_wait_resp <= 1'b1;
+      end else if (!i_req && !i_wait_resp && !i_buf_valid && !i_redirect_pending) begin
+        i_req <= 1'b1;
+      end
     end
   end
 
@@ -432,7 +491,7 @@ module kv32_core
       instr_valid_id <= 1'b0;  // Squashed by branch/trap
     end else if (!id_stall) begin
       if (i_valid) begin
-        pc_id          <= pc_if;
+        pc_id          <= i_pc_data;
         instr_id       <= i_rdata;
         instr_valid_id <= 1'b1;  // Real instruction loaded
       end

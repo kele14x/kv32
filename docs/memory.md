@@ -8,7 +8,7 @@ see [SPEC.md §4](../SPEC.md).
 
 ## Dual memory interfaces
 
-The core exposes two independent memory interfaces using a **req/ack** protocol:
+The core exposes two independent memory interfaces using a **req/gnt/ack** protocol:
 
 - **imem_\*** — instruction fetch (IF stage), read-only, direct passthrough.
 - **dmem_\*** — data load/store (MEM stage), routed through `kv32_mem_fe`.
@@ -16,16 +16,16 @@ The core exposes two independent memory interfaces using a **req/ack** protocol:
 There is no internal arbiter. At SoC integration time, an external crossbar or
 interconnect fabric arbitrates between the two ports.
 
-### req/ack protocol
+### req/gnt/ack protocol
 
-| Signal   | Direction        | Meaning                                                                                     |
-| -------- | ---------------- | ------------------------------------------------------------------------------------------- |
-| `req`    | Master → Slave   | Transaction requested. Master holds `req` high and keeps address/data stable until `ack`.   |
-| `ack`    | Slave → Master   | Transaction complete. For loads, `rdata` is valid on the same cycle as `ack`.               |
+| Signal   | Direction        | Meaning                                                                                   |
+| -------- | ---------------- | ----------------------------------------------------------------------------------------- |
+| `req`    | Master → Slave   | Transaction requested. Master holds `req` high and keeps address/data stable until `gnt`. |
+| `gnt`    | Slave → Master   | Request accepted this cycle.                                                             |
+| `ack`    | Slave → Master   | Accepted transaction completed. For loads, `rdata` is valid on the same cycle as `ack`.  |
 
-A transaction completes when `req && ack`. Zero-latency slaves (combinational
-BRAM) assert `ack` in the same cycle as `req`, so aligned accesses complete in
-one cycle with no pipeline stall.
+A request is accepted when `req && gnt`; the response later arrives with `ack`.
+Zero-latency slaves may assert `req && gnt && ack` in the same cycle.
 
 ### i-port (instruction fetch)
 
@@ -39,8 +39,8 @@ assign imem_size  = 2'b10;       // always word
 assign imem_wdata = 32'h0;
 assign imem_be    = 4'hF;
 assign imem_excl  = 1'b0;
-assign i_valid    = imem_ack;
-assign i_rdata    = imem_rdata;
+assign i_valid    = i_buf_valid;
+assign i_rdata    = i_buf_instr;
 ```
 
 ### d-port (data load/store)
@@ -71,8 +71,8 @@ transactions. For loads, it returns the extracted and sign/zero-extended value.
 
 ### Downstream interface (bus side)
 
-Standard req/ack protocol: `dmem_req`/`dmem_addr`/`dmem_we`/`dmem_size`/
-`dmem_wdata`/`dmem_be`/`dmem_excl` + `dmem_ack`/`dmem_rdata`/`dmem_err`.
+Standard req/gnt/ack protocol: `dmem_req`/`dmem_addr`/`dmem_we`/`dmem_size`/
+`dmem_wdata`/`dmem_be`/`dmem_excl` + `dmem_gnt`/`dmem_ack`/`dmem_rdata`/`dmem_err`.
 
 **Split-beat `dmem_size`**: for word-crossing accesses, each beat carries a
 subset of the original bytes. `dmem_size` still reflects the *original* access
@@ -95,11 +95,12 @@ Four functional blocks:
    - `non_crossing_ma` — **only** `SH@addr[1:0]=01`. Handled inline (single
      access, `BE=0110`, address word-aligned).
 
-3. **Alignment handler FSM** (4-state) — splits crossing accesses into two
+3. **Alignment handler FSM** (5-state) — splits crossing accesses into two
    aligned word transactions, with early abort on bus error:
 
    ```text
-   MA_IDLE → MA_FIRST → MA_BETWEEN → MA_SECOND → MA_IDLE
+   MA_IDLE → MA_SINGLE_WAIT → MA_IDLE
+          ↘ MA_FIRST_WAIT → MA_SECOND_REQ → MA_SECOND_WAIT → MA_IDLE
                  ↘ (err) → MA_IDLE
    ```
 
@@ -109,16 +110,11 @@ Four functional blocks:
      - `word_crossing && !crossing_overflow`: latch offset/size, suppress
        `dmem_req`, go `MA_FIRST`.
      - Otherwise inline passthrough for `non_crossing_ma` and aligned accesses.
-   - **`MA_FIRST`** — drive first aligned access (word-aligned addr,
-     `first_be`/`first_wdata`). On `dmem_ack`:
-     - `dmem_err`: abort to `MA_IDLE` (no second beat, `err` + `rdata_valid`
-       pulse).
-     - otherwise: latch `ma_first_rdata`, go `MA_BETWEEN`.
-   - **`MA_BETWEEN`** — 1-cycle gap (`dmem_req=0`). Unconditional transition to
-     `MA_SECOND`.
-   - **`MA_SECOND`** — drive second aligned access (addr+4,
-     `second_be`/`second_wdata`). On `dmem_ack`, go `MA_IDLE` (success or err
-     both return).
+   - **`MA_FIRST_WAIT`** — first crossing beat already granted; wait for its
+    `dmem_ack`.
+   - **`MA_SECOND_REQ`** — drive the second aligned access (addr+4,
+    `second_be`/`second_wdata`) until `dmem_gnt`.
+   - **`MA_SECOND_WAIT`** — second beat granted; wait for `dmem_ack`.
 
 4. **Load data extraction** — selects and extends the correct bytes from the
    bus word based on `funct3` and `addr[1:0]`. For crossing loads, stitches

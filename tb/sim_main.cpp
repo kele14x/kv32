@@ -366,59 +366,68 @@ static void reset(Vkv32_core* top, VerilatedVcdC* tfp) {
     top->rst_n = 1;
 }
 
-// Memory responder: implements req/ack protocol for both ports.
-// When mem_latency=0, behaves as zero-latency (combinational ack).
-// When mem_latency>0, delays ack by N cycles, exercising the
-// misalignment handler's FSM states and pipeline mem_stall paths.
-//
-// The master holds req until ack. For loads, rdata accompanies ack.
-// Each port has independent state — they share the same BRAM.
+// Memory responder: implements req/gnt/ack protocol for both ports.
+// When mem_latency=0 and no older transaction is outstanding, grant and ack may
+// arrive in the same cycle. When mem_latency>0, ack is delayed by N cycles after
+// acceptance. Each port has independent state — they share the same BRAM.
 struct MemPortState {
-    uint32_t rdata;
-    bool     pending;
+    bool     outstanding;
     int      latency_count;
     uint32_t txn_addr;
     bool     txn_we;
+    uint32_t txn_wdata;
+    uint8_t  txn_be;
 };
 
 static int mem_latency = 0;  // cycles between req and ack (0 = combinational)
 
-static MemPortState imem_state = {0, false, 0, 0xFFFFFFFF, false};
-static MemPortState dmem_state = {0, false, 0, 0xFFFFFFFF, false};
+static MemPortState imem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
+static MemPortState dmem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
 
 static void port_responder(MemPortState& state,
                            bool req, uint32_t addr, bool we,
                            uint32_t wdata, uint8_t be,
-                           uint8_t& ack, uint32_t& rdata) {
-    // Detect start of new transaction: req high and either not pending,
-    // or address/we changed (i-port never deasserts req, so new fetches
-    // are detected by address change).
-    bool new_txn = req && (!state.pending || addr != state.txn_addr || we != state.txn_we);
-    if (new_txn) {
-        state.pending       = true;
-        state.latency_count = mem_latency;
-        state.txn_addr      = addr;
-        state.txn_we        = we;
+                           uint8_t& gnt, uint8_t& ack, uint32_t& rdata) {
+    const bool old_ack = state.outstanding && (state.latency_count == 0);
+    const bool grant   = req && (!state.outstanding || old_ack);
+    const bool new_ack = grant && !state.outstanding && (mem_latency == 0);
+
+    gnt = grant;
+    ack = old_ack || new_ack;
+    rdata = 0;
+
+    if (old_ack) {
+        if (state.txn_we) {
+            bram_write(state.txn_addr, state.txn_wdata, state.txn_be);
+        } else {
+            rdata = bram_read(state.txn_addr);
+        }
+    } else if (new_ack) {
         if (we) {
             bram_write(addr, wdata, be);
         } else {
-            state.rdata = bram_read(addr);
+            rdata = bram_read(addr);
         }
     }
 
-    // Drive ack after latency expires
-    if (state.pending) {
-        if (state.latency_count > 0) {
-            state.latency_count--;
-            ack = 0;
+    if (state.outstanding && !old_ack && state.latency_count > 0) {
+        state.latency_count--;
+    }
+    if (old_ack) {
+        state.outstanding = false;
+    }
+
+    if (grant) {
+        if (!state.outstanding && !old_ack && mem_latency == 0) {
+            // Zero-latency transaction completed inline this cycle.
         } else {
-            ack   = req;  // ack while req is held
-            rdata = state.rdata;
+            state.outstanding   = true;
+            state.latency_count = old_ack ? mem_latency : mem_latency;
+            state.txn_addr      = addr;
+            state.txn_we        = we;
+            state.txn_wdata     = wdata;
+            state.txn_be        = be;
         }
-        // Clear pending if req drops (master done — d-port only)
-        if (!req) state.pending = false;
-    } else {
-        ack = 0;
     }
 }
 
@@ -426,7 +435,7 @@ static void imem_responder(Vkv32_core* top) {
     port_responder(imem_state,
                    top->imem_req, top->imem_addr, false,
                    0, 0xF,
-                   top->imem_ack, top->imem_rdata);
+                   top->imem_gnt, top->imem_ack, top->imem_rdata);
     top->imem_err = 0;
 }
 
@@ -434,7 +443,7 @@ static void dmem_responder(Vkv32_core* top) {
     port_responder(dmem_state,
                    top->dmem_req, top->dmem_addr, top->dmem_we,
                    top->dmem_wdata, top->dmem_be,
-                   top->dmem_ack, top->dmem_rdata);
+                   top->dmem_gnt, top->dmem_ack, top->dmem_rdata);
     top->dmem_err = 0;
 }
 
@@ -573,14 +582,16 @@ int main(int argc, char** argv) {
     top->irq_external_i = 0;
     top->irq_timer_i    = 0;
     top->irq_software_i = 0;
+    top->imem_gnt  = 0;
     top->imem_ack  = 0;
     top->imem_rdata = 0;
     top->imem_err  = 0;
+    top->dmem_gnt  = 0;
     top->dmem_ack  = 0;
     top->dmem_rdata = 0;
     top->dmem_err  = 0;
-    imem_state = {0, false, 0, 0xFFFFFFFF, false};
-    dmem_state = {0, false, 0, 0xFFFFFFFF, false};
+    imem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
+    dmem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
 
     if (mem_latency > 0)
         printf("Memory latency: %d cycles\n", mem_latency);

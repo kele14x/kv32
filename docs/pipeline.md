@@ -91,8 +91,9 @@ assign if_stall  = if_wait || load_use_hazard || mem_stall;
 
 - `mem_stall`: MEM stalls until `d_valid` (not just `d_gnt`).
 - `ex_stall`: backpressure from MEM freezes the ID/EX register.
-- `if_wait`: IF has an outstanding fetch with no response yet; inserts a bubble
-  in EX to prevent double-execution once the instruction arrives.
+- `if_wait`: IF has a fetch request or response in flight with no buffered
+  instruction available yet; inserts a bubble in EX to prevent double-execution
+  once the instruction arrives.
 - All pipeline registers use the `if (!stall)` pattern to hold values during
   stalls.
 

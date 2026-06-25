@@ -29,9 +29,9 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
   byte-enable write support. `bram_base` selects legacy mode (BRAM at
   `0x00000000`) or riscv-tests mode (BRAM at `0x80000000` with a trampoline at
   `0x00000000` that does `LUI`+`JALR` to `bram_entry`).
-- **`imem_responder()` / `dmem_responder()`** — drive `*_ack`/`*_rdata` per port
-  to match the req/ack protocol (SPEC §4.2). Each port has independent latency
-  state; both share the same BRAM model.
+- **`imem_responder()` / `dmem_responder()`** — drive `*_gnt`/`*_ack`/`*_rdata`
+  per port to match the req/gnt/ack protocol (SPEC §4.2). Each port has
+  independent latency state; both share the same BRAM model.
 - **`read_reg()`** — reads register file state via `rootp->` internal signal
   access.
 - **Built-in test programs** — `TestWord[]` arrays (address + instruction
@@ -68,9 +68,10 @@ with `RISCV_GCC=/path/to/riscv-gcc`). Run all with `make riscv-tests`, or a
 single test with `make riscv-test-<name>` (e.g. `riscv-test-add`,
 `riscv-test-lw`).
 
-**Status**: all 42 `rv32ui-p` tests PASS at both zero and 2-cycle memory
-latency. The env/p startup uses a trap-and-skip pattern for optional CSRs — see
-[traps.md](traps.md#trap-and-skip-pattern).
+**Status**: all 42 `rv32ui-p` tests PASS at zero latency. The 2-cycle latency
+suite currently passes 41/42, with `rv32ui-p-ma_data` still under investigation
+after the req/gnt/ack transition. The env/p startup uses a trap-and-skip pattern
+for optional CSRs — see [traps.md](traps.md#trap-and-skip-pattern).
 
 ## Built-in tests
 
