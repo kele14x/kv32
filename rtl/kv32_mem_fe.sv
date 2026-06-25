@@ -227,15 +227,16 @@ module kv32_mem_fe (
   } ma_state_t;
 
   // verilator lint_off UNUSEDSIGNAL
-  ma_state_t ma_state;
-  logic [31:0] ma_first_rdata;  // [7:0] unused — crossing stitch only reads upper bytes
-  logic [31:0] ma_base;
-  logic [1:0] ma_offset;
-  logic [1:0] ma_size;
+  ma_state_t        ma_state;
+  logic      [31:0] ma_first_rdata;  // [7:0] unused — crossing stitch only reads upper bytes
+  logic      [31:0] ma_base;
+  logic      [ 1:0] ma_offset;
+  logic      [ 1:0] ma_size;
+  logic             ma_single_non_crossing;
   // verilator lint_on UNUSEDSIGNAL
 
   // Word-aligned base address for crossing accesses
-  logic [31:0] aligned_base;
+  logic      [31:0] aligned_base;
   assign aligned_base = {addr[31:2], 2'b00};
 
   logic single_beat;
@@ -244,20 +245,20 @@ module kv32_mem_fe (
   logic first_accept;
   logic first_complete;
   logic second_complete;
-  logic crossing_first_inline;
+  logic non_crossing_single_complete;
 
-  assign single_beat          = req && !word_crossing && !crossing_overflow;
-  assign single_accept        = (ma_state == MA_IDLE) && single_beat && dmem_gnt;
+  assign single_beat = req && !word_crossing && !crossing_overflow;
+  assign single_accept = (ma_state == MA_IDLE) && single_beat && dmem_gnt;
   assign single_complete      = (single_accept && dmem_ack) ||
                                 ((ma_state == MA_SINGLE_WAIT) && dmem_ack);
   assign first_accept         = (ma_state == MA_IDLE) && req && word_crossing &&
                                 !crossing_overflow && dmem_gnt;
-  assign first_complete       = (first_accept && dmem_ack) ||
-                                ((ma_state == MA_FIRST_WAIT) && dmem_ack);
+  assign first_complete = (first_accept && dmem_ack) || ((ma_state == MA_FIRST_WAIT) && dmem_ack);
   assign second_complete      = ((ma_state == MA_SECOND_REQ) && dmem_gnt && dmem_ack) ||
-                                ((ma_state == MA_SECOND_WAIT) && dmem_ack);
-  assign crossing_first_inline = (ma_state == MA_IDLE) && req && word_crossing &&
-                                 !crossing_overflow && dmem_gnt && dmem_ack;
+  ((ma_state == MA_SECOND_WAIT) && dmem_ack);
+  assign non_crossing_single_complete =
+      (single_accept && dmem_ack && non_crossing_ma) ||
+      ((ma_state == MA_SINGLE_WAIT) && dmem_ack && ma_single_non_crossing);
 
   // Downstream bus signals (muxed by FSM state)
   //
@@ -332,18 +333,20 @@ module kv32_mem_fe (
   // FSM state transitions
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      ma_state       <= MA_IDLE;
-      ma_first_rdata <= 32'h0;
-      ma_base        <= 32'h0;
-      ma_offset      <= 2'b00;
-      ma_size        <= 2'b00;
+      ma_state               <= MA_IDLE;
+      ma_first_rdata         <= 32'h0;
+      ma_base                <= 32'h0;
+      ma_offset              <= 2'b00;
+      ma_size                <= 2'b00;
+      ma_single_non_crossing <= 1'b0;
     end else begin
       unique case (ma_state)
         MA_IDLE: begin
           if (req && word_crossing && !crossing_overflow) begin
-            ma_base   <= aligned_base;
+            ma_base <= aligned_base;
             ma_offset <= addr[1:0];
-            ma_size   <= size;
+            ma_size <= size;
+            ma_single_non_crossing <= 1'b0;
             if (dmem_gnt) begin
               if (dmem_ack) begin
                 if (dmem_err) begin
@@ -357,12 +360,16 @@ module kv32_mem_fe (
               end
             end
           end else if (single_beat && dmem_gnt && !dmem_ack) begin
+            ma_single_non_crossing <= non_crossing_ma;
             ma_state <= MA_SINGLE_WAIT;
+          end else begin
+            ma_single_non_crossing <= 1'b0;
           end
         end
 
         MA_SINGLE_WAIT: begin
           if (dmem_ack) begin
+            ma_single_non_crossing <= 1'b0;
             ma_state <= MA_IDLE;
           end
         end
@@ -437,7 +444,7 @@ module kv32_mem_fe (
     // Non-crossing misaligned: only SH@addr[1:0]=01 reaches here.
     // Shift right by 8 so the LH extractor (keyed on addr[1]=0)
     // picks up bytes 1,2 as the low halfword.
-    if ((single_complete || crossing_first_inline) && non_crossing_ma && !we) begin
+    if (non_crossing_single_complete && !we) begin
       raw_rdata = {8'h0, dmem_rdata[31:8]};
     end
   end

@@ -53,6 +53,54 @@ static void check_eq(const char* name, uint32_t got, uint32_t want) {
     }
 }
 
+static void check_non_crossing_sh01_load_latency(Vkv32_mem_fe* d, int latency) {
+    char label[64];
+
+    reset(d);
+    set_inputs(d, 1, 0x1001, 0, 1, 0, 1);  // LH load
+    d->dmem_rdata = 0x12AB3400;            // bytes 1-2 = 0xAB34
+
+    if (latency == 0) {
+        d->dmem_ack = 1;
+        d->dmem_gnt = 1;
+        d->eval();
+        snprintf(label, sizeof(label), "SH@01 load lat%d rdata_valid", latency);
+        check_eq(label, d->rdata_valid, 1);
+        snprintf(label, sizeof(label), "SH@01 load lat%d rdata", latency);
+        check_eq(label, d->rdata, 0xFFFFAB34);
+        return;
+    }
+
+    d->dmem_ack = 0;
+    d->dmem_gnt = 1;
+    d->eval();
+    snprintf(label, sizeof(label), "SH@01 load lat%d req", latency);
+    check_eq(label, d->dmem_req, 1);
+    snprintf(label, sizeof(label), "SH@01 load lat%d addr", latency);
+    check_eq(label, d->dmem_addr, 0x1000);
+    snprintf(label, sizeof(label), "SH@01 load lat%d be", latency);
+    check_eq(label, d->dmem_be, 0x6);
+    snprintf(label, sizeof(label), "SH@01 load lat%d wait0", latency);
+    check_eq(label, d->rdata_valid, 0);
+    tick(d);  // request accepted, now waiting for ack
+
+    d->dmem_gnt = 0;
+    for (int cycle = 1; cycle < latency; cycle++) {
+        d->dmem_ack = 0;
+        d->eval();
+        snprintf(label, sizeof(label), "SH@01 load lat%d wait%d", latency, cycle);
+        check_eq(label, d->rdata_valid, 0);
+        tick(d);
+    }
+
+    d->dmem_ack = 1;
+    d->eval();
+    snprintf(label, sizeof(label), "SH@01 load lat%d rdata_valid", latency);
+    check_eq(label, d->rdata_valid, 1);
+    snprintf(label, sizeof(label), "SH@01 load lat%d rdata", latency);
+    check_eq(label, d->rdata, 0xFFFFAB34);
+}
+
 // ---- Sub-word store positioning (combinational) ----
 static void test_store_positioning(Vkv32_mem_fe* d) {
     printf("--- Store positioning ---\n");
@@ -190,18 +238,12 @@ static void test_non_crossing_sh01(Vkv32_mem_fe* d) {
     check_eq("SH@01 store wdata", d->dmem_wdata, 0x00ABCD00);
     check_eq("SH@01 store req", d->dmem_req, 1);
 
-    // Load: addr=0x1001, size=SH, should shift rdata right by 8
-    reset(d);
-    set_inputs(d, 1, 0x1001, 0, 1, 0, 1);  // LH load
-    d->dmem_rdata = 0x12AB3400;  // word containing halfword at bytes 1-2
-    d->dmem_ack = 1; d->dmem_gnt = 1;
-    d->eval();
-    check_eq("SH@01 load addr", d->dmem_addr, 0x1000);
-    check_eq("SH@01 load be", d->dmem_be, 0x6);
-    check_eq("SH@01 load rdata_valid", d->rdata_valid, 1);
-    // Shifted right by 8: 0x0012AB34, then LH extracts low half: 0xFFFFAB34
-    // (0xAB34 has bit 15 set, so sign-extended)
-    check_eq("SH@01 load rdata", d->rdata, 0xFFFFAB34);
+    // Load: addr=0x1001, size=SH, should shift rdata right by 8 both for
+    // same-cycle completion and after waiting in MA_SINGLE_WAIT.
+    check_non_crossing_sh01_load_latency(d, 0);
+    check_non_crossing_sh01_load_latency(d, 1);
+    check_non_crossing_sh01_load_latency(d, 2);
+    check_non_crossing_sh01_load_latency(d, 10);
 }
 
 // ---- Crossing SH@addr[1:0]=11 (store) ----
