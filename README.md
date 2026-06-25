@@ -29,7 +29,17 @@ The project ships with two C++ testbenches (Verilator) that exercise the ALU and
 make verilator          # compile and run the ALU test (default)
 make test-subword       # run the sub-word memory test
 make test-all           # run both
+make test-all MEM_LATENCY=2
+make test-all MEM_RANDOM_LATENCY=1
+make test-all IMEM_LATENCY=10 DMEM_LATENCY=1
+make test-all IMEM_LATENCY=1 DMEM_LATENCY=10
 ```
+
+Integration tests use the simulator's default fixed 1-cycle memory latency.
+Override with `MEM_LATENCY=<n>` for a deterministic latency or
+`MEM_RANDOM_LATENCY=1` to enable randomized bus stress. To isolate failures,
+override `IMEM_LATENCY`, `DMEM_LATENCY`, `IMEM_RANDOM_LATENCY`, and
+`DMEM_RANDOM_LATENCY` per port.
 
 ### Unit tests
 
@@ -74,6 +84,9 @@ make riscv-tests-compile RISCV_GCC=/path/to/riscv-gcc
 
 ```bash
 make riscv-tests
+make riscv-tests MEM_LATENCY=2
+make riscv-tests MEM_RANDOM_LATENCY=1
+make riscv-tests IMEM_LATENCY=10 DMEM_LATENCY=1
 ```
 
 This runs every compiled binary through the Verilator simulation and reports pass/fail/timeout counts.
@@ -87,6 +100,8 @@ make riscv-test-add        # run the ADD test
 make riscv-test-lui        # run the LUI test
 make riscv-test-bne        # run the BNE branch test
 make riscv-test-lw         # run the LW load test
+make riscv-test-add MEM_RANDOM_LATENCY=1
+make riscv-test-add IMEM_LATENCY=1 DMEM_LATENCY=10
 ```
 
 To list available test names:
@@ -113,7 +128,12 @@ Options:
 | `--test <name>`   | Run a built-in test: `alu` / `0`, `subword` / `1`              | `alu`          |
 | `--cycles <n>`    | Maximum simulation cycles before timeout                       | `50000`        |
 | `--notrace`       | Disable VCD trace output                                       | *(tracing on)* |
-| `--latency <n>`   | Memory response latency in cycles (0 = combinational)          | `0`            |
+| `--latency <n>`   | Fixed memory response latency in cycles (0 = combinational)    | `1`            |
+| `--random-latency`| Randomize each accepted request latency for bus stress testing | `off`          |
+| `--imem-latency <n>` | Fixed instruction-memory latency override                   | uses `--latency` |
+| `--dmem-latency <n>` | Fixed data-memory latency override                          | uses `--latency` |
+| `--imem-random-latency` | Randomize instruction-memory latency                    | `off`          |
+| `--dmem-random-latency` | Randomize data-memory latency                           | `off`          |
 
 ## Project Layout
 

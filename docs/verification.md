@@ -31,7 +31,8 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
   `0x00000000` that does `LUI`+`JALR` to `bram_entry`).
 - **`imem_responder()` / `dmem_responder()`** — drive `*_gnt`/`*_ack`/`*_rdata`
   per port to match the req/gnt/ack protocol (SPEC §4.2). Each port has
-  independent latency state; both share the same BRAM model.
+  independent latency state; both share the same BRAM model. The responder can
+  run with either a fixed latency or a randomized stress profile.
 - **`read_reg()`** — reads register file state via `rootp->` internal signal
   access.
 - **Built-in test programs** — `TestWord[]` arrays (address + instruction
@@ -47,11 +48,33 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
 | `--test <name>`   | built-in test: `alu`/`0`, `subword`/`1`                 | `alu`          |
 | `--cycles <n>`    | max simulation cycles before timeout                    | `50000`        |
 | `--notrace`       | disable VCD trace output                                | *(tracing on)* |
-| `--latency <n>`   | memory response latency in cycles (0 = combinational)   | `0`            |
+| `--latency <n>`   | fixed memory response latency in cycles (0 = combinational) | `1`        |
+| `--random-latency`| randomize per-request latency (90%: 1-3 cycles, 10%: 4-10 cycles) | `off` |
+| `--imem-latency <n>` | fixed instruction-memory latency override            | uses `--latency` |
+| `--dmem-latency <n>` | fixed data-memory latency override                   | uses `--latency` |
+| `--imem-random-latency` | randomize instruction-memory latency             | `off` |
+| `--dmem-random-latency` | randomize data-memory latency                    | `off` |
 
-`--latency` is the main knob for exercising the `kv32_mem_fe` misalignment FSM
-hold states and the pipeline `mem_stall` paths (see [memory.md](memory.md) and
-[pipeline.md](pipeline.md)).
+`--latency` is the deterministic knob for exercising the `kv32_mem_fe`
+misalignment FSM hold states and the pipeline `mem_stall` paths (see
+[memory.md](memory.md) and [pipeline.md](pipeline.md)). `--random-latency`
+switches the responder into a stress mode that keeps most transactions in the
+1-3 cycle range while occasionally stretching them as far as 10 cycles.
+`--imem-*` and `--dmem-*` allow isolating instruction-side vs data-side latency
+when debugging failures.
+
+The Makefile forwards these settings into the integration simulator and
+`riscv-tests` runs:
+
+```bash
+make test-all MEM_LATENCY=2
+make test-all MEM_RANDOM_LATENCY=1
+make test-all IMEM_LATENCY=10 DMEM_LATENCY=1
+make test-all IMEM_LATENCY=1 DMEM_LATENCY=10
+make riscv-tests MEM_LATENCY=2
+make riscv-tests MEM_RANDOM_LATENCY=1
+make riscv-tests IMEM_LATENCY=10 DMEM_LATENCY=1
+```
 
 ## riscv-tests
 
@@ -68,10 +91,21 @@ with `RISCV_GCC=/path/to/riscv-gcc`). Run all with `make riscv-tests`, or a
 single test with `make riscv-test-<name>` (e.g. `riscv-test-add`,
 `riscv-test-lw`).
 
-**Status**: all 42 `rv32ui-p` tests PASS at zero latency. The 2-cycle latency
-suite currently passes 41/42, with `rv32ui-p-ma_data` still under investigation
-after the req/gnt/ack transition. The env/p startup uses a trap-and-skip pattern
-for optional CSRs — see [traps.md](traps.md#trap-and-skip-pattern).
+**Known issues**:
+
+- `rv32ui-p-ma_data` still fails under the req/gnt/ack memory model in the
+  normal fixed-latency configurations we tested (`IMEM=1,DMEM=1` and
+  `IMEM=1,DMEM=10`).
+- With `IMEM_LATENCY=10`, the current `make riscv-tests` run hits the existing
+  `--cycles 50000` limit and all 42 `rv32ui-p` tests time out, regardless of
+  the DMEM latency setting.
+- The built-in integration tests pass with fixed latencies 0-3 and in random
+  stress mode, but the sub-word test currently fails two checks (`x8`, `x9`)
+  when both `IMEM_LATENCY=10` and `DMEM_LATENCY=10`. Setting only one port to
+  10 cycles still passes.
+
+The env/p startup uses a trap-and-skip pattern for optional CSRs — see
+[traps.md](traps.md#trap-and-skip-pattern).
 
 ## Built-in tests
 
@@ -80,4 +114,5 @@ for optional CSRs — see [traps.md](traps.md#trap-and-skip-pattern).
 - **Sub-word test** (`--test subword`, `make test-subword`): 11/11 checks across
   LB/LBU/LH/LHU/LW and SB/SH/SW, including byte-enable verification.
 
-Run both: `make test-all`.
+Run both: `make test-all`. Unit tests do not use these latency controls because
+they do not drive the full integration memory model in `tb/sim_main.cpp`.

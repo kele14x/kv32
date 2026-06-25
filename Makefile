@@ -3,6 +3,27 @@
 RTL_DIR = rtl
 TB_DIR  = tb
 
+MEM_LATENCY ?= 1
+MEM_RANDOM_LATENCY ?= 0
+IMEM_LATENCY ?= $(MEM_LATENCY)
+DMEM_LATENCY ?= $(MEM_LATENCY)
+IMEM_RANDOM_LATENCY ?= $(MEM_RANDOM_LATENCY)
+DMEM_RANDOM_LATENCY ?= $(MEM_RANDOM_LATENCY)
+
+ifeq ($(IMEM_RANDOM_LATENCY),1)
+IMEM_LATENCY_ARGS := --imem-random-latency
+else
+IMEM_LATENCY_ARGS := --imem-latency $(IMEM_LATENCY)
+endif
+
+ifeq ($(DMEM_RANDOM_LATENCY),1)
+DMEM_LATENCY_ARGS := --dmem-random-latency
+else
+DMEM_LATENCY_ARGS := --dmem-latency $(DMEM_LATENCY)
+endif
+
+MEM_LATENCY_ARGS := $(IMEM_LATENCY_ARGS) $(DMEM_LATENCY_ARGS)
+
 # ---- Help ----
 
 help:
@@ -23,7 +44,7 @@ help:
 	@echo "    test-alu               Run the ALU integration test"
 	@echo "    test-subword           Run the sub-word memory test"
 	@echo "    test-all               Run all built-in integration tests"
-	@echo "    test-latency           Built-in tests with 2-cycle memory latency"
+	@echo "                           Override MEM/IMEM/DMEM_LATENCY or *_RANDOM_LATENCY=1"
 	@echo ""
 	@echo "  Unit Tests (per-module, isolated testbenches):"
 	@echo "    unit-tests             Run all 5 unit tests"
@@ -35,7 +56,7 @@ help:
 	@echo ""
 	@echo "  riscv-tests (requires RISC-V toolchain):"
 	@echo "    riscv-tests            Auto-checkout, compile, and run all rv32ui tests"
-	@echo "    riscv-tests-latency    Run all rv32ui tests (2-cycle latency)"
+	@echo "                           Override MEM/IMEM/DMEM_LATENCY or *_RANDOM_LATENCY=1"
 	@echo "    riscv-test-<name>      Run a single test (e.g. riscv-test-add)"
 	@echo ""
 
@@ -54,7 +75,7 @@ TB_CPP = $(TB_DIR)/sim_main.cpp
 # ---- Verilator ----
 
 verilator: verilator-build
-	./build/obj_dir/Vkv32_core
+	./build/obj_dir/Vkv32_core $(MEM_LATENCY_ARGS)
 
 verilator-build: $(RTL_SOURCES) $(TB_CPP) | build
 	verilator --cc --exe --build -j 1 \
@@ -68,39 +89,10 @@ test-alu: verilator
 
 # Run sub-word memory test
 test-subword: verilator-build
-	./build/obj_dir/Vkv32_core --test subword
+	./build/obj_dir/Vkv32_core --test subword $(MEM_LATENCY_ARGS)
 
 # Run all built-in tests and check exit code
 test-all: test-alu test-subword
-
-# Run built-in tests with multi-cycle memory latency (exercises stall paths)
-test-latency: verilator-build
-	./build/obj_dir/Vkv32_core --test alu --latency 2 --notrace
-	./build/obj_dir/Vkv32_core --test subword --latency 2 --notrace
-
-# Run riscv-tests with multi-cycle memory latency
-riscv-tests-latency: verilator-build
-	@pass=0; fail=0; skip=0; total=0; \
-	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-*; do \
-		case "$$test" in *.dump) continue;; esac; \
-		name=$$(basename $$test); \
-		total=$$((total+1)); \
-		printf "  %-30s " $$name; \
-		if ./build/obj_dir/Vkv32_core --binary $$test --cycles 100000 --latency 2 --notrace > /tmp/kv32_lat_$${name}.log 2>&1; then \
-			printf "PASS\n"; pass=$$((pass+1)); \
-		else \
-			result=$$?; \
-			if grep -q TIMEOUT /tmp/kv32_lat_$${name}.log; then \
-				printf "TIMEOUT\n"; skip=$$((skip+1)); \
-			else \
-				printf "FAIL\n"; fail=$$((fail+1)); \
-			fi; \
-		fi; \
-	done; \
-	echo ""; \
-	echo "=== riscv-tests-latency Results ==="; \
-	echo "  $$pass passed, $$fail failed, $$skip timeout (of $$total total)"; \
-	echo "==================================="
 
 # ---- riscv-tests ----
 
@@ -151,7 +143,7 @@ riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 
 # Run a single riscv-test: make riscv-test-TESTNAME
 riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
-	./build/obj_dir/Vkv32_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$*
+	./build/obj_dir/Vkv32_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$* $(MEM_LATENCY_ARGS)
 
 # Run all rv32ui tests (auto-compiles if needed, skips .dump files)
 riscv-tests: verilator-build riscv-tests-compile
@@ -161,7 +153,7 @@ riscv-tests: verilator-build riscv-tests-compile
 		name=$$(basename $$test); \
 		total=$$((total+1)); \
 		printf "  %-30s " $$name; \
-		if ./build/obj_dir/Vkv32_core --binary $$test --cycles 50000 --notrace > build/kv32_test_$${name}.log 2>&1; then \
+		if ./build/obj_dir/Vkv32_core --binary $$test --cycles 50000 --notrace $(MEM_LATENCY_ARGS) > build/kv32_test_$${name}.log 2>&1; then \
 			printf "PASS\n"; pass=$$((pass+1)); \
 		else \
 			result=$$?; \

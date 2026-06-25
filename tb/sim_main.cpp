@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <random>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <vector>
@@ -372,25 +373,48 @@ static void reset(Vkv32_core* top, VerilatedVcdC* tfp) {
 // acceptance. Each port has independent state — they share the same BRAM.
 struct MemPortState {
     bool     outstanding;
-    int      latency_count;
+    int      cycles_until_ack;
     uint32_t txn_addr;
     bool     txn_we;
     uint32_t txn_wdata;
     uint8_t  txn_be;
 };
 
-static int mem_latency = 0;  // cycles between req and ack (0 = combinational)
+struct MemLatencyConfig {
+    int  fixed_latency;
+    bool random_enabled;
+};
+
+static MemLatencyConfig imem_latency_cfg = {1, false};
+static MemLatencyConfig dmem_latency_cfg = {1, false};
+static std::mt19937 latency_rng(0x4B563332u);
 
 static MemPortState imem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
 static MemPortState dmem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
 
+static int choose_mem_latency(const MemLatencyConfig& cfg) {
+    if (!cfg.random_enabled) return cfg.fixed_latency;
+
+    static std::uniform_int_distribution<int> pick_band(0, 9);
+    static std::uniform_int_distribution<int> short_latency(1, 3);
+    static std::uniform_int_distribution<int> long_latency(4, 10);
+
+    return (pick_band(latency_rng) < 9)
+               ? short_latency(latency_rng)
+               : long_latency(latency_rng);
+}
+
 static void port_responder(MemPortState& state,
+                           const MemLatencyConfig& cfg,
                            bool req, uint32_t addr, bool we,
                            uint32_t wdata, uint8_t be,
                            uint8_t& gnt, uint8_t& ack, uint32_t& rdata) {
-    const bool old_ack = state.outstanding && (state.latency_count == 0);
+    const bool old_ack = state.outstanding && (state.cycles_until_ack == 1);
     const bool grant   = req && (!state.outstanding || old_ack);
-    const bool new_ack = grant && !state.outstanding && (mem_latency == 0);
+    const int  selected_latency = grant ? choose_mem_latency(cfg) : 0;
+    const int  effective_latency =
+        (old_ack && selected_latency == 0) ? 1 : selected_latency;
+    const bool new_ack = grant && !state.outstanding && (selected_latency == 0);
 
     gnt = grant;
     ack = old_ack || new_ack;
@@ -410,29 +434,30 @@ static void port_responder(MemPortState& state,
         }
     }
 
-    if (state.outstanding && !old_ack && state.latency_count > 0) {
-        state.latency_count--;
+    if (state.outstanding && !old_ack && state.cycles_until_ack > 1) {
+        state.cycles_until_ack--;
     }
     if (old_ack) {
         state.outstanding = false;
     }
 
     if (grant) {
-        if (!state.outstanding && !old_ack && mem_latency == 0) {
+        if (!state.outstanding && !old_ack && selected_latency == 0) {
             // Zero-latency transaction completed inline this cycle.
         } else {
-            state.outstanding   = true;
-            state.latency_count = old_ack ? mem_latency : mem_latency;
-            state.txn_addr      = addr;
-            state.txn_we        = we;
-            state.txn_wdata     = wdata;
-            state.txn_be        = be;
+            state.outstanding      = true;
+            state.cycles_until_ack = effective_latency;
+            state.txn_addr         = addr;
+            state.txn_we           = we;
+            state.txn_wdata        = wdata;
+            state.txn_be           = be;
         }
     }
 }
 
 static void imem_responder(Vkv32_core* top) {
     port_responder(imem_state,
+                   imem_latency_cfg,
                    top->imem_req, top->imem_addr, false,
                    0, 0xF,
                    top->imem_gnt, top->imem_ack, top->imem_rdata);
@@ -441,6 +466,7 @@ static void imem_responder(Vkv32_core* top) {
 
 static void dmem_responder(Vkv32_core* top) {
     port_responder(dmem_state,
+                   dmem_latency_cfg,
                    top->dmem_req, top->dmem_addr, top->dmem_we,
                    top->dmem_wdata, top->dmem_be,
                    top->dmem_gnt, top->dmem_ack, top->dmem_rdata);
@@ -541,6 +567,11 @@ int main(int argc, char** argv) {
     uint32_t    tohost_addr = 0x80001000; // Standard riscv-tests tohost
     bool        tohost_set  = false;      // User override via --tohost
 
+    auto parse_latency = [](const char* arg) {
+        int latency = atoi(arg);
+        return (latency < 0) ? 0 : latency;
+    };
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--notrace") == 0) {
             trace = false;
@@ -562,8 +593,20 @@ int main(int argc, char** argv) {
             tohost_addr = (uint32_t)strtoul(argv[++i], nullptr, 0);
             tohost_set  = true;
         } else if (strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
-            mem_latency = atoi(argv[++i]);
-            if (mem_latency < 0) mem_latency = 0;
+            const int latency = parse_latency(argv[++i]);
+            imem_latency_cfg.fixed_latency = latency;
+            dmem_latency_cfg.fixed_latency = latency;
+        } else if (strcmp(argv[i], "--random-latency") == 0) {
+            imem_latency_cfg.random_enabled = true;
+            dmem_latency_cfg.random_enabled = true;
+        } else if (strcmp(argv[i], "--imem-latency") == 0 && i + 1 < argc) {
+            imem_latency_cfg.fixed_latency = parse_latency(argv[++i]);
+        } else if (strcmp(argv[i], "--dmem-latency") == 0 && i + 1 < argc) {
+            dmem_latency_cfg.fixed_latency = parse_latency(argv[++i]);
+        } else if (strcmp(argv[i], "--imem-random-latency") == 0) {
+            imem_latency_cfg.random_enabled = true;
+        } else if (strcmp(argv[i], "--dmem-random-latency") == 0) {
+            dmem_latency_cfg.random_enabled = true;
         }
     }
 
@@ -593,8 +636,17 @@ int main(int argc, char** argv) {
     imem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
     dmem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
 
-    if (mem_latency > 0)
-        printf("Memory latency: %d cycles\n", mem_latency);
+    auto print_latency_cfg = [](const char* name, const MemLatencyConfig& cfg) {
+        if (cfg.random_enabled) {
+            printf("%s latency: random stress mode (90%% 1-3 cycles, 10%% 4-10 cycles)\n",
+                   name);
+        } else {
+            printf("%s latency: fixed %d cycle%s\n",
+                   name, cfg.fixed_latency, (cfg.fixed_latency == 1) ? "" : "s");
+        }
+    };
+    print_latency_cfg("IMEM", imem_latency_cfg);
+    print_latency_cfg("DMEM", dmem_latency_cfg);
 
     if (binary_path) {
         // ---- riscv-tests mode ----
