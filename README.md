@@ -23,7 +23,9 @@ make lint
 
 ### Built-in tests
 
-The project ships with two C++ testbenches (Verilator) that exercise the ALU and sub-word memory paths:
+The project ships with a Verilator integration testbench (`tb/tb_core.sv` +
+`tb/tb_core.cpp`) that exercises two built-in programs covering the ALU and
+sub-word memory paths:
 
 ```bash
 make verilator          # compile and run the ALU test (default)
@@ -115,9 +117,9 @@ ls tests/riscv-tests/isa/rv32ui/*.S | xargs -n1 basename -s .S
 The simulator binary accepts an arbitrary ELF (or flat binary) via `--binary`:
 
 ```bash
-./build/obj_dir/Vkv32_core --binary tests/riscv-tests/isa/rv32ui-p-add
-./build/obj_dir/Vkv32_core --binary path/to/custom.elf --cycles 100000
-./build/obj_dir/Vkv32_core --binary path/to/firmware.bin --notrace
+./build/obj_dir/Vtb_core --binary tests/riscv-tests/isa/rv32ui-p-add
+./build/obj_dir/Vtb_core --binary path/to/custom.elf --cycles 100000
+./build/obj_dir/Vtb_core --binary path/to/firmware.bin --notrace
 ```
 
 Options:
@@ -147,7 +149,9 @@ rtl/          SystemVerilog RTL sources
   kv32_mem_fe.sv      Data memory front-end: sub-word positioning, load extraction, misalignment FSM
   kv32_pkg.sv         Shared types and constants
 tb/           Testbenches
-  sim_main.cpp        Verilator C++ test driver
+  tb_core.cpp         Full-core Verilator C++ harness
+  tb_core.sv          Full-core SystemVerilog testbench top
+  tb_core_mem.sv      Full-core SV BRAM + latency model
 tests/        External test suites
   riscv-tests/        riscv-tests submodule
 docs/         Topic-oriented implementation docs (pipeline, decoder, memory, csr, traps, verification)

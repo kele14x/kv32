@@ -1,5 +1,5 @@
-#include "Vkv32_core.h"
-#include "Vkv32_core___024root.h"
+#include "Vtb_core.h"
+#include "Vtb_core___024root.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
@@ -32,60 +32,63 @@ struct ElfInfo {
 };
 
 // ============================================================================
-// BRAM Memory Model (64 KiB, word-addressed, byte-enable writes)
-//   - bram_base=0: legacy mode, BRAM at 0x00000000 (existing tests)
-//   - bram_base=0x80000000: riscv-tests mode, BRAM at 0x80000000
-//     with trampoline at 0x00000000 (LUI+JALR to jump to bram_entry)
+// Integration memory backdoor helpers
 // ============================================================================
 
 static const int BRAM_WORDS = 16384; // 64 KiB / 4
-static uint32_t bram[BRAM_WORDS];
-static uint32_t bram_base  = 0;          // Set before loading
-static uint32_t bram_entry = 0x80000000; // Trampoline jump target
 
-static void bram_write(uint32_t addr, uint32_t wdata, uint8_t be) {
-    if (addr < bram_base) return;
-    uint32_t off = addr - bram_base;
-    int idx = (int)(off >> 2) & (BRAM_WORDS - 1);
-    if (be & 1) bram[idx] = (bram[idx] & 0xFFFFFF00) | (wdata & 0x000000FF);
-    if (be & 2) bram[idx] = (bram[idx] & 0xFFFF00FF) | (wdata & 0x0000FF00);
-    if (be & 4) bram[idx] = (bram[idx] & 0xFF00FFFF) | (wdata & 0x00FF0000);
-    if (be & 8) bram[idx] = (bram[idx] & 0x00FFFFFF) | (wdata & 0xFF000000);
+static int mem_index(const Vtb_core* top, uint32_t addr) {
+    if (addr < top->mem_base_i) return -1;
+    uint32_t off = addr - top->mem_base_i;
+    return (int)((off >> 2) & (BRAM_WORDS - 1));
 }
 
-static uint32_t bram_read(uint32_t addr) {
-    // Trampoline: boot code at 0x00000000 jumps to bram_entry
-    if (bram_base != 0 && addr < bram_base) {
-        uint32_t offset = addr >> 2;
-        if (offset == 0) {
-            // LUI x5, %hi(bram_entry)
-            uint32_t upper = (bram_entry + 0x800) >> 12;
-            return (upper << 12) | (5 << 7) | 0x37;
-        }
-        if (offset == 1) {
-            // JALR x0, x5, %lo(bram_entry)
-            return ((bram_entry & 0xFFF) << 20) | (5 << 15) | (0 << 7) | 0x67;
-        }
-        return 0x00000013; // NOP
+static void mem_clear(Vtb_core* top) {
+    auto root = top->rootp;
+    for (int i = 0; i < BRAM_WORDS; i++) {
+        root->tb_core__DOT__u_mem__DOT__mem[i] = 0;
     }
-    uint32_t off = addr - bram_base;
-    return bram[(off >> 2) & (BRAM_WORDS - 1)];
 }
 
-// Byte-level write for ELF loading
-static void bram_write_byte(uint32_t addr, uint8_t data) {
-    if (addr < bram_base) return;
-    uint32_t off = addr - bram_base;
-    int idx  = (int)(off >> 2) & (BRAM_WORDS - 1);
-    int byte_pos = addr & 3;
-    int shift = byte_pos * 8;
-    bram[idx] = (bram[idx] & ~(0xFFu << shift)) | ((uint32_t)data << shift);
+static void mem_write_word(Vtb_core* top, uint32_t addr, uint32_t data) {
+    const int idx = mem_index(top, addr);
+    if (idx < 0) return;
+    top->rootp->tb_core__DOT__u_mem__DOT__mem[idx] = data;
+}
+
+static void mem_write_byte(Vtb_core* top, uint32_t addr, uint8_t data) {
+    const int idx = mem_index(top, addr);
+    if (idx < 0) return;
+
+    auto root = top->rootp;
+    uint32_t word = root->tb_core__DOT__u_mem__DOT__mem[idx];
+    const uint32_t shift = (addr & 3u) * 8u;
+    word = (word & ~(0xFFu << shift)) | ((uint32_t)data << shift);
+    root->tb_core__DOT__u_mem__DOT__mem[idx] = word;
+}
+
+static uint32_t mem_read_word(Vtb_core* top, uint32_t addr) {
+    if (top->mem_base_i != 0 && addr < top->mem_base_i) {
+        const uint32_t word_index = addr >> 2;
+        if (word_index == 0) {
+            const uint32_t upper = (top->entry_addr_i + 0x800u) >> 12;
+            return (upper << 12) | (5u << 7) | 0x37u;
+        }
+        if (word_index == 1) {
+            return ((top->entry_addr_i & 0xFFFu) << 20) | (5u << 15) | 0x67u;
+        }
+        return 0x00000013u;
+    }
+
+    const int idx = mem_index(top, addr);
+    if (idx < 0) return 0;
+    return top->rootp->tb_core__DOT__u_mem__DOT__mem[idx];
 }
 
 // ============================================================================
 // ELF Loader — parse ELF32, load PT_LOAD segments into BRAM
 // ============================================================================
-static ElfInfo load_elf(const char* path) {
+static ElfInfo load_elf(Vtb_core* top, const char* path) {
     ElfInfo result = {0, 0, false};
 
     FILE* f = fopen(path, "rb");
@@ -156,11 +159,11 @@ static ElfInfo load_elf(const char* path) {
         // Load file data
         for (uint32_t j = 0; j < p_filesz; j++) {
             if (p_offset + j >= (uint32_t)fsize) break;
-            bram_write_byte(p_vaddr + j, buf[p_offset + j]);
+            mem_write_byte(top, p_vaddr + j, buf[p_offset + j]);
         }
         // Zero-fill BSS
         for (uint32_t j = p_filesz; j < p_memsz; j++) {
-            bram_write_byte(p_vaddr + j, 0);
+            mem_write_byte(top, p_vaddr + j, 0);
         }
     }
 
@@ -228,9 +231,9 @@ static ElfInfo load_elf(const char* path) {
 }
 
 // ============================================================================
-// Flat binary loader (fallback, loads at bram_base)
+// Flat binary loader (fallback, loads at mem_base_i)
 // ============================================================================
-static bool load_flat_binary(const char* path) {
+static bool load_flat_binary(Vtb_core* top, const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Error: cannot open binary: %s\n", path);
@@ -242,24 +245,24 @@ static bool load_flat_binary(const char* path) {
     size_t n;
     while ((n = fread(rbuf, 1, sizeof(rbuf), f)) > 0) {
         for (size_t i = 0; i < n; i++) {
-            bram_write_byte(bram_base + offset + (uint32_t)i, rbuf[i]);
+            mem_write_byte(top, top->mem_base_i + offset + (uint32_t)i, rbuf[i]);
         }
         offset += (uint32_t)n;
     }
     fclose(f);
-    printf("Loaded flat binary: %u bytes at 0x%08X\n", offset, bram_base);
+    printf("Loaded flat binary: %u bytes at 0x%08X\n", offset, top->mem_base_i);
     return true;
 }
 
 // Smart loader: detects ELF by magic, falls back to flat binary
-static ElfInfo load_binary(const char* path) {
-    memset(bram, 0, sizeof(bram));
+static ElfInfo load_binary(Vtb_core* top, const char* path) {
+    mem_clear(top);
 
     // Peek at first 4 bytes to detect ELF
     FILE* f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Error: cannot open %s\n", path);
-        return {0, false};
+        return {0, 0, false};
     }
     uint8_t magic[4];
     size_t n = fread(magic, 1, 4, f);
@@ -267,12 +270,12 @@ static ElfInfo load_binary(const char* path) {
 
     if (n >= 4 && magic[0] == 0x7F && magic[1] == 'E' &&
         magic[2] == 'L'  && magic[3] == 'F') {
-        return load_elf(path);
+        return load_elf(top, path);
     }
 
-    // Flat binary — entry is bram_base, no tohost
-    if (load_flat_binary(path)) {
-        return {bram_base, 0, true};
+    // Flat binary — entry is mem_base_i, no tohost
+    if (load_flat_binary(top, path)) {
+        return {top->mem_base_i, 0, true};
     }
     return {0, 0, false};
 }
@@ -335,157 +338,37 @@ static const RegCheck check_subword[] = {
 static vluint64_t sim_time = 0;
 static int fail_count = 0;
 
-// Forward declarations — defined after tick()
-static void imem_responder(Vkv32_core* top);
-static void dmem_responder(Vkv32_core* top);
-
-static void tick(Vkv32_core* top, VerilatedVcdC* tfp) {
+static void tick(Vtb_core* top, VerilatedVcdC* tfp) {
     top->clk = 0;
-    top->eval();  // Evaluate combinational: outputs reflect current state
-    if (tfp) tfp->dump(sim_time++);
-
-    // Drive memory responders with fresh outputs, get ack
-    imem_responder(top);
-    dmem_responder(top);
-
-    // Re-evaluate so ack propagates through combinational logic
-    // (rdata_valid, mem_stall, etc.) before the rising edge captures state.
     top->eval();
+    if (tfp) tfp->dump(sim_time);
+    sim_time += 5;
 
     top->clk = 1;
     top->eval();
-    if (tfp) tfp->dump(sim_time++);
-    top->clk = 0;
-    top->eval();
-    if (tfp) tfp->dump(sim_time++);
+    if (tfp) tfp->dump(sim_time);
+    sim_time += 5;
 }
 
-static void reset(Vkv32_core* top, VerilatedVcdC* tfp) {
+static void reset(Vtb_core* top, VerilatedVcdC* tfp) {
     top->rst_n = 0;
     tick(top, tfp);
     tick(top, tfp);
     top->rst_n = 1;
 }
-
-// Memory responder: implements req/gnt/ack protocol for both ports.
-// When mem_latency=0 and no older transaction is outstanding, grant and ack may
-// arrive in the same cycle. When mem_latency>0, ack is delayed by N cycles after
-// acceptance. Each port has independent state — they share the same BRAM.
-struct MemPortState {
-    bool     outstanding;
-    int      cycles_until_ack;
-    uint32_t txn_addr;
-    bool     txn_we;
-    uint32_t txn_wdata;
-    uint8_t  txn_be;
-};
-
-struct MemLatencyConfig {
-    int  fixed_latency;
-    bool random_enabled;
-};
-
-static MemLatencyConfig imem_latency_cfg = {1, false};
-static MemLatencyConfig dmem_latency_cfg = {1, false};
-static std::mt19937 latency_rng(0x4B563332u);
-
-static MemPortState imem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
-static MemPortState dmem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
-
-static int choose_mem_latency(const MemLatencyConfig& cfg) {
-    if (!cfg.random_enabled) return cfg.fixed_latency;
-
-    static std::uniform_int_distribution<int> pick_band(0, 9);
-    static std::uniform_int_distribution<int> short_latency(1, 3);
-    static std::uniform_int_distribution<int> long_latency(4, 10);
-
-    return (pick_band(latency_rng) < 9)
-               ? short_latency(latency_rng)
-               : long_latency(latency_rng);
-}
-
-static void port_responder(MemPortState& state,
-                           const MemLatencyConfig& cfg,
-                           bool req, uint32_t addr, bool we,
-                           uint32_t wdata, uint8_t be,
-                           uint8_t& gnt, uint8_t& ack, uint32_t& rdata) {
-    const bool old_ack = state.outstanding && (state.cycles_until_ack == 1);
-    const bool grant   = req && (!state.outstanding || old_ack);
-    const int  selected_latency = grant ? choose_mem_latency(cfg) : 0;
-    const int  effective_latency =
-        (old_ack && selected_latency == 0) ? 1 : selected_latency;
-    const bool new_ack = grant && !state.outstanding && (selected_latency == 0);
-
-    gnt = grant;
-    ack = old_ack || new_ack;
-    rdata = 0;
-
-    if (old_ack) {
-        if (state.txn_we) {
-            bram_write(state.txn_addr, state.txn_wdata, state.txn_be);
-        } else {
-            rdata = bram_read(state.txn_addr);
-        }
-    } else if (new_ack) {
-        if (we) {
-            bram_write(addr, wdata, be);
-        } else {
-            rdata = bram_read(addr);
-        }
-    }
-
-    if (state.outstanding && !old_ack && state.cycles_until_ack > 1) {
-        state.cycles_until_ack--;
-    }
-    if (old_ack) {
-        state.outstanding = false;
-    }
-
-    if (grant) {
-        if (!state.outstanding && !old_ack && selected_latency == 0) {
-            // Zero-latency transaction completed inline this cycle.
-        } else {
-            state.outstanding      = true;
-            state.cycles_until_ack = effective_latency;
-            state.txn_addr         = addr;
-            state.txn_we           = we;
-            state.txn_wdata        = wdata;
-            state.txn_be           = be;
-        }
-    }
-}
-
-static void imem_responder(Vkv32_core* top) {
-    port_responder(imem_state,
-                   imem_latency_cfg,
-                   top->imem_req, top->imem_addr, false,
-                   0, 0xF,
-                   top->imem_gnt, top->imem_ack, top->imem_rdata);
-    top->imem_err = 0;
-}
-
-static void dmem_responder(Vkv32_core* top) {
-    port_responder(dmem_state,
-                   dmem_latency_cfg,
-                   top->dmem_req, top->dmem_addr, top->dmem_we,
-                   top->dmem_wdata, top->dmem_be,
-                   top->dmem_gnt, top->dmem_ack, top->dmem_rdata);
-    top->dmem_err = 0;
-}
-
-static void load_program(const TestWord* prog, int count) {
-    memset(bram, 0, sizeof(bram));
+static void load_program(Vtb_core* top, const TestWord* prog, int count) {
+    mem_clear(top);
     for (int i = 0; i < count; i++) {
-        bram[prog[i].addr_word] = prog[i].data;
+        mem_write_word(top, (uint32_t)prog[i].addr_word << 2, prog[i].data);
     }
 }
 
-static uint32_t read_reg(Vkv32_core* top, int reg) {
-    return top->rootp->kv32_core__DOT__u_regfile__DOT__regs[reg];
+static uint32_t read_reg(Vtb_core* top, int reg) {
+    return top->rootp->tb_core__DOT__u_core__DOT__u_regfile__DOT__regs[reg];
 }
 
 // Run existing hard-coded tests (register-check based)
-static void run_and_check(Vkv32_core* top, VerilatedVcdC* tfp,
+static void run_and_check(Vtb_core* top, VerilatedVcdC* tfp,
                           const RegCheck* checks, int max_cycles) {
     for (int i = 0; i < max_cycles; i++) {
         tick(top, tfp);
@@ -511,28 +394,28 @@ static void run_and_check(Vkv32_core* top, VerilatedVcdC* tfp,
 
 // Run riscv-test (tohost-based pass/fail detection)
 // Returns: 0=pass, 1=fail, 2=timeout
-static int run_riscv_test(Vkv32_core* top, VerilatedVcdC* tfp,
+static int run_riscv_test(Vtb_core* top, VerilatedVcdC* tfp,
                           uint32_t tohost_addr, int max_cycles) {
     bool debug_ma = (getenv("KV32_DEBUG_MA") != nullptr);
     for (int i = 0; i < max_cycles; i++) {
         tick(top, tfp);
 
         if (debug_ma && i >= 436 && i <= 460) {
-            uint32_t w0 = bram_read(0x80002000);
-            uint32_t w1 = bram_read(0x80002004);
+            uint32_t w0 = mem_read_word(top, 0x80002000);
+            uint32_t w1 = mem_read_word(top, 0x80002004);
             auto r = top->rootp;
             printf("  [%d] ma=%d we=%d dmem_addr=0x%08X dmem_be=0x%X dmem_wdata=0x%08X wd_mem=0x%08X B0=0x%08X B1=0x%08X\n",
-                   i, r->kv32_core__DOT__u_mem_fe__DOT__ma_state,
-                   r->kv32_core__DOT__mem_write_mem,
-                   top->dmem_addr,
-                   top->dmem_be,
-                   top->dmem_wdata,
-                   r->kv32_core__DOT__mem_wdata_mem,
+                   i, r->tb_core__DOT__u_core__DOT__u_mem_fe__DOT__ma_state,
+                   r->tb_core__DOT__u_core__DOT__mem_write_mem,
+                   r->tb_core__DOT__dmem_addr,
+                   r->tb_core__DOT__dmem_be,
+                   r->tb_core__DOT__dmem_wdata,
+                   r->tb_core__DOT__u_core__DOT__mem_wdata_mem,
                    w0, w1);
         }
 
         // Check tohost
-        uint32_t tohost = bram_read(tohost_addr);
+        uint32_t tohost = top->tohost_word_o;
         if (tohost != 0) {
             if (tohost == 1) {
                 printf("PASS (tohost=1) after %d cycles\n", i + 1);
@@ -548,7 +431,7 @@ static int run_riscv_test(Vkv32_core* top, VerilatedVcdC* tfp,
     }
 
     printf("TIMEOUT after %d cycles (tohost=0x%08X)\n",
-           max_cycles, bram_read(tohost_addr));
+           max_cycles, top->tohost_word_o);
     fail_count++;
     return 2;
 }
@@ -560,12 +443,16 @@ int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     Verilated::traceEverOn(true);
 
-    bool        trace       = true;
-    int         test_id     = 0;          // 0=alu, 1=subword
-    const char* binary_path = nullptr;
-    int         max_cycles  = 50000;      // Default timeout for riscv-tests
-    uint32_t    tohost_addr = 0x80001000; // Standard riscv-tests tohost
-    bool        tohost_set  = false;      // User override via --tohost
+    bool        trace               = true;
+    int         test_id             = 0;          // 0=alu, 1=subword
+    const char* binary_path         = nullptr;
+    int         max_cycles          = 50000;      // Default timeout for riscv-tests
+    uint32_t    tohost_addr         = 0x80001000; // Standard riscv-tests tohost
+    bool        tohost_set          = false;      // User override via --tohost
+    uint32_t    imem_fixed_latency  = 1;
+    uint32_t    dmem_fixed_latency  = 1;
+    bool        imem_random_latency = false;
+    bool        dmem_random_latency = false;
 
     auto parse_latency = [](const char* arg) {
         int latency = atoi(arg);
@@ -594,29 +481,29 @@ int main(int argc, char** argv) {
             tohost_set  = true;
         } else if (strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
             const int latency = parse_latency(argv[++i]);
-            imem_latency_cfg.fixed_latency = latency;
-            dmem_latency_cfg.fixed_latency = latency;
+            imem_fixed_latency = latency;
+            dmem_fixed_latency = latency;
         } else if (strcmp(argv[i], "--random-latency") == 0) {
-            imem_latency_cfg.random_enabled = true;
-            dmem_latency_cfg.random_enabled = true;
+            imem_random_latency = true;
+            dmem_random_latency = true;
         } else if (strcmp(argv[i], "--imem-latency") == 0 && i + 1 < argc) {
-            imem_latency_cfg.fixed_latency = parse_latency(argv[++i]);
+            imem_fixed_latency = parse_latency(argv[++i]);
         } else if (strcmp(argv[i], "--dmem-latency") == 0 && i + 1 < argc) {
-            dmem_latency_cfg.fixed_latency = parse_latency(argv[++i]);
+            dmem_fixed_latency = parse_latency(argv[++i]);
         } else if (strcmp(argv[i], "--imem-random-latency") == 0) {
-            imem_latency_cfg.random_enabled = true;
+            imem_random_latency = true;
         } else if (strcmp(argv[i], "--dmem-random-latency") == 0) {
-            dmem_latency_cfg.random_enabled = true;
+            dmem_random_latency = true;
         }
     }
 
-    Vkv32_core* top = new Vkv32_core;
+    Vtb_core* top = new Vtb_core;
     VerilatedVcdC* tfp = nullptr;
     if (trace) {
         mkdir("build", 0755);  // ensure build directory exists
         tfp = new VerilatedVcdC;
         top->trace(tfp, 99);
-        tfp->open("build/kv32_core_tb.vcd");
+        tfp->open("build/tb_core.vcd");
     }
 
     // Initialize inputs
@@ -625,46 +512,44 @@ int main(int argc, char** argv) {
     top->irq_external_i = 0;
     top->irq_timer_i    = 0;
     top->irq_software_i = 0;
-    top->imem_gnt  = 0;
-    top->imem_ack  = 0;
-    top->imem_rdata = 0;
-    top->imem_err  = 0;
-    top->dmem_gnt  = 0;
-    top->dmem_ack  = 0;
-    top->dmem_rdata = 0;
-    top->dmem_err  = 0;
-    imem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
-    dmem_state = {false, 0, 0xFFFFFFFF, false, 0, 0};
+    top->imem_fixed_latency_i  = imem_fixed_latency;
+    top->imem_random_latency_i = imem_random_latency;
+    top->dmem_fixed_latency_i  = dmem_fixed_latency;
+    top->dmem_random_latency_i = dmem_random_latency;
+    top->mem_base_i            = 0;
+    top->entry_addr_i          = 0;
+    top->tohost_addr_i         = tohost_addr;
 
-    auto print_latency_cfg = [](const char* name, const MemLatencyConfig& cfg) {
-        if (cfg.random_enabled) {
+    auto print_latency_cfg = [](const char* name, uint32_t fixed_latency, bool random_enabled) {
+        if (random_enabled) {
             printf("%s latency: random stress mode (90%% 1-3 cycles, 10%% 4-10 cycles)\n",
                    name);
         } else {
             printf("%s latency: fixed %d cycle%s\n",
-                   name, cfg.fixed_latency, (cfg.fixed_latency == 1) ? "" : "s");
+                   name, fixed_latency, (fixed_latency == 1) ? "" : "s");
         }
     };
-    print_latency_cfg("IMEM", imem_latency_cfg);
-    print_latency_cfg("DMEM", dmem_latency_cfg);
+    print_latency_cfg("IMEM", imem_fixed_latency, imem_random_latency);
+    print_latency_cfg("DMEM", dmem_fixed_latency, dmem_random_latency);
 
     if (binary_path) {
         // ---- riscv-tests mode ----
-        bram_base  = 0x80000000;
-        bram_entry = 0x80000000;
+        top->mem_base_i = 0x80000000;
+        top->entry_addr_i = 0x80000000;
 
-        ElfInfo elf = load_binary(binary_path);
+        ElfInfo elf = load_binary(top, binary_path);
         if (!elf.valid) {
             fprintf(stderr, "Failed to load binary: %s\n", binary_path);
             fail_count++;
         } else {
-            bram_entry = elf.entry;
+            top->entry_addr_i = elf.entry;
             if (!tohost_set && elf.tohost != 0) {
                 tohost_addr = elf.tohost;
+                top->tohost_addr_i = tohost_addr;
             }
             printf("Running riscv-test: %s\n", binary_path);
             printf("  Entry: 0x%08X  BRAM base: 0x%08X  tohost: 0x%08X\n",
-                   elf.entry, bram_base, tohost_addr);
+                   elf.entry, top->mem_base_i, tohost_addr);
 
             reset(top, tfp);
             int rc = run_riscv_test(top, tfp, tohost_addr, max_cycles);
@@ -673,15 +558,17 @@ int main(int argc, char** argv) {
     } else if (test_id == 0) {
         // ---- ALU test ----
         printf("Running ALU test (test 0)...\n");
-        bram_base = 0;
-        load_program(prog_alu, sizeof(prog_alu) / sizeof(prog_alu[0]));
+        top->mem_base_i = 0;
+        top->entry_addr_i = 0;
+        load_program(top, prog_alu, sizeof(prog_alu) / sizeof(prog_alu[0]));
         reset(top, tfp);
         run_and_check(top, tfp, check_alu, 200);
     } else if (test_id == 1) {
         // ---- Sub-word memory test ----
         printf("Running sub-word memory test (test 1)...\n");
-        bram_base = 0;
-        load_program(prog_subword, sizeof(prog_subword) / sizeof(prog_subword[0]));
+        top->mem_base_i = 0;
+        top->entry_addr_i = 0;
+        load_program(top, prog_subword, sizeof(prog_subword) / sizeof(prog_subword[0]));
         reset(top, tfp);
         run_and_check(top, tfp, check_subword, 400);
     }

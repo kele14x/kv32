@@ -23,22 +23,23 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
 
 ## Integration tests
 
-`tb/sim_main.cpp` drives `kv32_core` via the Verilator API. Key components:
+`tb/tb_core.sv` is the Verilator top for full-core testing. It instantiates
+`kv32_core` plus `tb/tb_core_mem.sv`, a SystemVerilog memory model that:
 
-- **`bram_write()` / `bram_read()`** — 64 KiB BRAM model (word-addressed) with
-  byte-enable write support. `bram_base` selects legacy mode (BRAM at
-  `0x00000000`) or riscv-tests mode (BRAM at `0x80000000` with a trampoline at
-  `0x00000000` that does `LUI`+`JALR` to `bram_entry`).
-- **`imem_responder()` / `dmem_responder()`** — drive `*_gnt`/`*_ack`/`*_rdata`
-  per port to match the req/gnt/ack protocol (SPEC §4.2). Each port has
-  independent latency state; both share the same BRAM model. The responder can
-  run with either a fixed latency or a randomized stress profile.
-- **`read_reg()`** — reads register file state via `rootp->` internal signal
-  access.
-- **Built-in test programs** — `TestWord[]` arrays (address + instruction
-  pairs) and `RegCheck[]` arrays (register + expected value + label).
-- **ELF32 loader** — loads an arbitrary ELF (or flat binary) for riscv-tests
-  and custom firmware.
+- stores the 64 KiB BRAM contents directly in SV (`mem[]`),
+- models the req/gnt/ack handshake for both IMEM and DMEM,
+- supports fixed and randomized per-port latency, and
+- synthesizes the reset-vector trampoline when the BRAM is mapped at
+  `0x80000000` for riscv-tests binaries.
+
+`tb/tb_core.cpp` is now a thin harness around that SV testbench. Key roles:
+
+- **Clock/reset + trace driver** — advances the SV testbench and writes the VCD.
+- **Backdoor memory initialization** — parses built-in programs, ELF files, or
+  flat binaries in C++ and writes the flashed bytes directly into the SV BRAM
+  array before reset.
+- **Register / tohost inspection** — reads the DUT register file via `rootp->`
+  for built-in checks and reads `tohost_word_o` for riscv-tests pass/fail.
 
 ### Simulator options
 
@@ -58,8 +59,8 @@ Run all: `make unit-tests`. Run one: `make unit-test-<module>`.
 `--latency` is the deterministic knob for exercising the `kv32_mem_fe`
 misalignment FSM hold states and the pipeline `mem_stall` paths (see
 [memory.md](memory.md) and [pipeline.md](pipeline.md)). `--random-latency`
-switches the responder into a stress mode that keeps most transactions in the
-1-3 cycle range while occasionally stretching them as far as 10 cycles.
+switches the SV memory model into a stress mode that keeps most transactions in
+the 1-3 cycle range while occasionally stretching them as far as 10 cycles.
 `--imem-*` and `--dmem-*` allow isolating instruction-side vs data-side latency
 when debugging failures.
 
@@ -91,19 +92,6 @@ with `RISCV_GCC=/path/to/riscv-gcc`). Run all with `make riscv-tests`, or a
 single test with `make riscv-test-<name>` (e.g. `riscv-test-add`,
 `riscv-test-lw`).
 
-**Known issues**:
-
-- `rv32ui-p-ma_data` still fails under the req/gnt/ack memory model in the
-  normal fixed-latency configurations we tested (`IMEM=1,DMEM=1` and
-  `IMEM=1,DMEM=10`).
-- With `IMEM_LATENCY=10`, the current `make riscv-tests` run hits the existing
-  `--cycles 50000` limit and all 42 `rv32ui-p` tests time out, regardless of
-  the DMEM latency setting.
-- The built-in integration tests pass with fixed latencies 0-3 and in random
-  stress mode, but the sub-word test currently fails two checks (`x8`, `x9`)
-  when both `IMEM_LATENCY=10` and `DMEM_LATENCY=10`. Setting only one port to
-  10 cycles still passes.
-
 The env/p startup uses a trap-and-skip pattern for optional CSRs — see
 [traps.md](traps.md#trap-and-skip-pattern).
 
@@ -115,4 +103,4 @@ The env/p startup uses a trap-and-skip pattern for optional CSRs — see
   LB/LBU/LH/LHU/LW and SB/SH/SW, including byte-enable verification.
 
 Run both: `make test-all`. Unit tests do not use these latency controls because
-they do not drive the full integration memory model in `tb/sim_main.cpp`.
+they do not drive the full integration memory model in `tb/tb_core.sv`.

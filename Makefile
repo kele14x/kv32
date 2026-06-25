@@ -40,7 +40,7 @@ help:
 	@echo "    clean-unit             Remove obj_dir_*/ (unit testbenches)"
 	@echo "    clean-riscv-tests      Remove build/riscv-tests/ (compiled ELFs)"
 	@echo ""
-	@echo "  Integration Tests (full core, sim_main.cpp):"
+	@echo "  Integration Tests (full core, tb_core.sv + tb_core.cpp):"
 	@echo "    test-alu               Run the ALU integration test"
 	@echo "    test-subword           Run the sub-word memory test"
 	@echo "    test-all               Run all built-in integration tests"
@@ -69,19 +69,22 @@ RTL_SOURCES = \
     $(RTL_DIR)/kv32_mem_fe.sv \
     $(RTL_DIR)/kv32_core.sv
 
-# Verilator C++ test driver
-TB_CPP = $(TB_DIR)/sim_main.cpp
+# Verilator integration testbench
+TB_SV_SOURCES = \
+    $(TB_DIR)/tb_core_mem.sv \
+    $(TB_DIR)/tb_core.sv
+TB_CPP = $(TB_DIR)/tb_core.cpp
 
 # ---- Verilator ----
 
 verilator: verilator-build
-	./build/obj_dir/Vkv32_core $(MEM_LATENCY_ARGS)
+	./build/obj_dir/Vtb_core $(MEM_LATENCY_ARGS)
 
-verilator-build: $(RTL_SOURCES) $(TB_CPP) | build
+verilator-build: $(RTL_SOURCES) $(TB_SV_SOURCES) $(TB_CPP) | build
 	verilator --cc --exe --build -j 1 \
 		-Wall -Wno-fatal --trace \
-		--top-module kv32_core \
-		$(RTL_SOURCES) $(TB_CPP) \
+		--top-module tb_core \
+		$(RTL_SOURCES) $(TB_SV_SOURCES) $(TB_CPP) \
 		--Mdir build/obj_dir
 
 # Run ALU test (default, same as 'verilator')
@@ -89,7 +92,7 @@ test-alu: verilator
 
 # Run sub-word memory test
 test-subword: verilator-build
-	./build/obj_dir/Vkv32_core --test subword $(MEM_LATENCY_ARGS)
+	./build/obj_dir/Vtb_core --test subword $(MEM_LATENCY_ARGS)
 
 # Run all built-in tests and check exit code
 test-all: test-alu test-subword
@@ -143,7 +146,7 @@ riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 
 # Run a single riscv-test: make riscv-test-TESTNAME
 riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
-	./build/obj_dir/Vkv32_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$* $(MEM_LATENCY_ARGS)
+	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$* $(MEM_LATENCY_ARGS)
 
 # Run all rv32ui tests (auto-compiles if needed, skips .dump files)
 riscv-tests: verilator-build riscv-tests-compile
@@ -153,7 +156,7 @@ riscv-tests: verilator-build riscv-tests-compile
 		name=$$(basename $$test); \
 		total=$$((total+1)); \
 		printf "  %-30s " $$name; \
-		if ./build/obj_dir/Vkv32_core --binary $$test --cycles 50000 --notrace $(MEM_LATENCY_ARGS) > build/kv32_test_$${name}.log 2>&1; then \
+		if ./build/obj_dir/Vtb_core --binary $$test --cycles 50000 --notrace $(MEM_LATENCY_ARGS) > build/kv32_test_$${name}.log 2>&1; then \
 			printf "PASS\n"; pass=$$((pass+1)); \
 		else \
 			result=$$?; \

@@ -41,7 +41,7 @@ A few cross-cutting gotchas worth flagging up front:
 
 ## Debugging Tips
 
-Inspect Verilator internal signals via `rootp->` or add `printf` in `sim_main.cpp`. Useful signal paths (all via `top->rootp->`):
+Inspect Verilator internal signals via `rootp->` or add `printf` in `tb_core.cpp`. Useful signal paths (all via `top->rootp->`):
 
 - Pipeline registers: `pc_if`, `pc_id`, `pc_ex`, `pc_mem`
 - Stall signals: `if_stall`, `id_stall`, `ex_stall`, `mem_stall`, `if_wait`
