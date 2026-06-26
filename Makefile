@@ -128,10 +128,16 @@ $(RISCV_TESTS_BUILD)/rv32ui-p-%: $(RISCV_TESTS_DIR)/isa/rv32ui/%.S $(RISCV_TESTS
 	$(RISCV_GCC) $(RISCV_CFLAGS) -march=$$march -mabi=$(RISCV_MABI) \
 		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
 
+# Compile a single rv32um test (M extension: multiply/divide)
+$(RISCV_TESTS_BUILD)/rv32um-p-%: $(RISCV_TESTS_DIR)/isa/rv32um/%.S $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
+	@echo "  CC  $* (M ext)"; \
+	$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32im_zicsr -mabi=$(RISCV_MABI) \
+		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
+
 $(RISCV_TESTS_BUILD):
 	@mkdir -p $@
 
-# Compile all rv32ui tests (wildcard evaluated at recipe time, after submodule checkout)
+# Compile all rv32ui and rv32um tests (wildcard evaluated at recipe time, after submodule checkout)
 riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 	@for test in $(RISCV_TESTS_DIR)/isa/rv32ui/*.S; do \
 		name=$$(basename $$test .S); \
@@ -144,15 +150,28 @@ riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
 		fi; \
 	done
+	@for test in $(RISCV_TESTS_DIR)/isa/rv32um/*.S; do \
+		name=$$(basename $$test .S); \
+		target=$(RISCV_TESTS_BUILD)/rv32um-p-$$name; \
+		if [ ! -f $$target ]; then \
+			echo "  CC  $$name (M ext)"; \
+			$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32im_zicsr -mabi=$(RISCV_MABI) \
+				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
+		fi; \
+	done
 
 # Run a single riscv-test: make riscv-test-TESTNAME
 riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
 	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32ui-p-$* $(MEM_LATENCY_ARGS)
 
-# Run all rv32ui tests (auto-compiles if needed, skips .dump files)
+# Run a single M-extension test: make riscv-test-m-TESTNAME
+riscv-test-m-%: verilator-build $(RISCV_TESTS_BUILD)/rv32um-p-%
+	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32um-p-$* $(MEM_LATENCY_ARGS)
+
+# Run all rv32ui and rv32um tests (auto-compiles if needed, skips .dump files)
 riscv-tests: verilator-build riscv-tests-compile
 	@pass=0; fail=0; skip=0; total=0; \
-	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-*; do \
+	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-* $(RISCV_TESTS_BUILD)/rv32um-p-*; do \
 		case "$$test" in *.dump) continue;; esac; \
 		name=$$(basename $$test); \
 		total=$$((total+1)); \

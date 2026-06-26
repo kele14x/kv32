@@ -215,13 +215,29 @@ module kv32_core
   // ===========================================================================
 
   logic [31:0] m_result;
+  // verilator lint_off UNUSEDSIGNAL
   logic        m_busy;
+  // verilator lint_on UNUSEDSIGNAL
   logic        m_done;
   logic        m_unit_start;
+  logic        m_started;  // Track that we've started the M-unit for this instruction
 
   // Start M-unit once when entering EXEC with an M-extension instruction.
-  // Don't re-pulse while the FSM stays in EXEC waiting for m_busy.
-  assign m_unit_start = (state == ST_EXEC) && (is_m_mul_id || is_m_div_id) && !m_busy && !m_done;
+  // m_started prevents re-triggering while the unit computes or while the
+  // result is still in the DONE state.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      m_started <= 1'b0;
+    end else if (state == ST_EXEC && (is_m_mul_id || is_m_div_id)) begin
+      if (!m_started) begin
+        m_started <= 1'b1;  // Mark that we've started
+      end
+    end else if (state != ST_EXEC) begin
+      m_started <= 1'b0;  // Clear when leaving EXEC
+    end
+  end
+
+  assign m_unit_start = (state == ST_EXEC) && (is_m_mul_id || is_m_div_id) && !m_started;
 
   kv32_m_unit u_m_unit (
       .clk   (clk),
@@ -495,10 +511,10 @@ module kv32_core
             ex_result_reg     <= ex_result;
             rs2_data_reg      <= rs2_data;
             state             <= ST_MEM;
-          end else if ((is_m_mul_id || is_m_div_id) && m_busy) begin
+          end else if ((is_m_mul_id || is_m_div_id) && !m_done) begin
             // M-unit still computing — stay in EXEC
           end else begin
-            // Normal instruction: latch EX result, advance to MEM
+            // Normal instruction or M-unit complete: latch EX result, advance to MEM
             ex_result_reg <= ex_result;
             rs2_data_reg  <= rs2_data;
             state         <= ST_MEM;

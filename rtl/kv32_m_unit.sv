@@ -136,10 +136,10 @@ module kv32_m_unit (
   assign quotient_signed = quotient_sign ? (~div_quotient + 1'b1) : div_quotient;
   assign remainder_signed = remainder_sign ? (~div_remainder + 1'b1) : div_remainder;
 
-  // Special cases (RISC-V spec: no trap)
-  assign div_by_zero = (op_b == 32'h0);
+  // Special cases (RISC-V spec: no trap) — only for division instructions
+  assign div_by_zero = !is_mul && (op_b == 32'h0);
   assign signed_overflow =
-      (funct3 == 3'b100 || funct3 == 3'b110) && (op_a == 32'h8000_0000) && (op_b == 32'hFFFF_FFFF);
+      !is_mul && (funct3 == 3'b100 || funct3 == 3'b110) && (op_a == 32'h8000_0000) && (op_b == 32'hFFFF_FFFF);
 
   assign special_case = div_by_zero || signed_overflow;
 
