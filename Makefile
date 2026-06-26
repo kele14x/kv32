@@ -63,6 +63,7 @@ help:
 RTL_SOURCES = \
     $(RTL_DIR)/kv32_pkg.sv \
     $(RTL_DIR)/kv32_alu.sv \
+    $(RTL_DIR)/kv32_m_unit.sv \
     $(RTL_DIR)/kv32_regfile.sv \
     $(RTL_DIR)/kv32_csr.sv \
     $(RTL_DIR)/kv32_decoder.sv \
@@ -176,7 +177,7 @@ riscv-tests: verilator-build riscv-tests-compile
 # Each target builds and runs an isolated testbench for one submodule.
 # This catches RTL bugs at the module boundary before integration.
 
-UNIT_TESTS = alu regfile decoder csr mem_fe
+UNIT_TESTS = alu regfile decoder csr mem_fe m_unit
 
 unit-test-alu: $(TB_DIR)/tb_alu.cpp $(RTL_DIR)/kv32_alu.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
@@ -212,6 +213,13 @@ unit-test-mem_fe: $(TB_DIR)/tb_mem_fe.cpp $(RTL_DIR)/kv32_mem_fe.sv | build
 		$(RTL_DIR)/kv32_mem_fe.sv $(TB_DIR)/tb_mem_fe.cpp \
 		--Mdir build/obj_dir_mem_fe
 	./build/obj_dir_mem_fe/Vkv32_mem_fe
+
+unit-test-m_unit: $(TB_DIR)/tb_m_unit.cpp $(RTL_DIR)/kv32_m_unit.sv | build
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_m_unit \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_m_unit.sv $(TB_DIR)/tb_m_unit.cpp \
+		--Mdir build/obj_dir_m_unit
+	./build/obj_dir_m_unit/Vkv32_m_unit
 
 unit-tests: $(addprefix unit-test-,$(UNIT_TESTS))
 	@echo ""

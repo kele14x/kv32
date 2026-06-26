@@ -124,6 +124,7 @@ module kv32_core
   logic csr_wen_id, is_csr_id, is_mret_id, use_zimm_id;
 
   logic is_ecall_id, is_ebreak_id;
+  logic is_m_mul_id, is_m_div_id;
 
   // Register file
   logic [31:0] rs1_data, rs2_data;
@@ -157,7 +158,9 @@ module kv32_core
       .is_mret     (is_mret_id),
       .use_zimm    (use_zimm_id),
       .is_ecall    (is_ecall_id),
-      .is_ebreak   (is_ebreak_id)
+      .is_ebreak   (is_ebreak_id),
+      .is_m_mul    (is_m_mul_id),
+      .is_m_div    (is_m_div_id)
   );
 
   // EX stage
@@ -183,6 +186,7 @@ module kv32_core
   csr_op_t       csr_op_ex;
   logic csr_wen_ex, is_csr_ex, is_mret_ex, use_zimm_ex;
   logic is_ecall_ex, is_ebreak_ex;
+  logic is_m_mul_ex, is_m_div_ex;
 
   logic [31:0] alu_a, alu_b, alu_result;
   logic [31:0] ex_result;
@@ -193,6 +197,26 @@ module kv32_core
       .b     (alu_b),
       .op    (alu_op_ex),
       .result(alu_result)
+  );
+
+  // M extension unit (multiply/divide)
+  logic [31:0] m_result;
+  logic        m_busy;
+  // verilator lint_off UNUSEDSIGNAL
+  logic        m_done;
+  // verilator lint_on UNUSEDSIGNAL
+
+  kv32_m_unit u_m_unit (
+      .clk   (clk),
+      .rst_n (rst_n),
+      .valid ((is_m_mul_ex || is_m_div_ex) && !mem_stall && !trap_taken),
+      .is_mul(is_m_mul_ex),
+      .funct3(funct3_ex),
+      .op_a  (fwd_a),
+      .op_b  (fwd_b),
+      .result(m_result),
+      .busy  (m_busy),
+      .done  (m_done)
   );
 
   // CSR module signals
@@ -335,6 +359,8 @@ module kv32_core
       ex_result = csr_rdata;
     end else if (lui_ex) begin
       ex_result = imm_ex;
+    end else if (is_m_mul_ex || is_m_div_ex) begin
+      ex_result = m_result;  // M extension (multiply/divide)
     end else if (alu_op_valid_ex || auipc_ex) begin
       ex_result = alu_result;
     end else begin
@@ -404,10 +430,10 @@ module kv32_core
   // MEM stalls when waiting for data memory response
   assign mem_stall = (mem_read_mem || mem_write_mem) && !fe_rdata_valid;
 
-  // Backpressure: mem_stall propagates to all earlier stages
-  assign ex_stall = mem_stall;
-  assign id_stall = load_use_hazard || mem_stall || if_wait;
-  assign if_stall = if_wait || load_use_hazard || mem_stall;
+  // Backpressure: mem_stall or M-unit busy propagates to all earlier stages
+  assign ex_stall = mem_stall || m_busy;
+  assign id_stall = load_use_hazard || mem_stall || m_busy || if_wait;
+  assign if_stall = if_wait || load_use_hazard || mem_stall || m_busy;
 
   // Flush: branch_taken OR trap_taken both flush IF and ID stages.
   // ex_flush also inserts a bubble into EX for both cases:
@@ -535,6 +561,8 @@ module kv32_core
       use_zimm_ex     <= 1'b0;
       is_ecall_ex     <= 1'b0;
       is_ebreak_ex    <= 1'b0;
+      is_m_mul_ex     <= 1'b0;
+      is_m_div_ex     <= 1'b0;
       instr_valid_ex  <= 1'b0;
     end else if (ex_stall) begin
       // Backpressure from MEM stage — freeze ID/EX
@@ -553,6 +581,8 @@ module kv32_core
       illegal_ex     <= 1'b0;
       is_ecall_ex    <= 1'b0;
       is_ebreak_ex   <= 1'b0;
+      is_m_mul_ex    <= 1'b0;
+      is_m_div_ex    <= 1'b0;
       instr_valid_ex <= 1'b0;  // Trap squashes the faulting instruction
     end else if (load_use_hazard || if_wait) begin
       // Insert bubble: load-use hazard or IF waiting for instruction
@@ -572,6 +602,8 @@ module kv32_core
       illegal_ex      <= 1'b0;
       is_ecall_ex     <= 1'b0;
       is_ebreak_ex    <= 1'b0;
+      is_m_mul_ex     <= 1'b0;
+      is_m_div_ex     <= 1'b0;
       instr_valid_ex  <= 1'b0;  // Bubble inserted
     end else begin
       pc_ex           <= pc_id;
@@ -600,6 +632,8 @@ module kv32_core
       use_zimm_ex     <= use_zimm_id;
       is_ecall_ex     <= is_ecall_id;
       is_ebreak_ex    <= is_ebreak_id;
+      is_m_mul_ex     <= is_m_mul_id;
+      is_m_div_ex     <= is_m_div_id;
       instr_valid_ex  <= instr_valid_id;
     end
   end

@@ -31,7 +31,11 @@ module kv32_decoder
     output logic    is_mret,   // MRET instruction
     output logic    use_zimm,  // Use zimm instead of rs1 (CSR immediate variants)
     output logic    is_ecall,  // ECALL instruction
-    output logic    is_ebreak  // EBREAK instruction
+    output logic    is_ebreak, // EBREAK instruction
+
+    // M extension control signals
+    output logic is_m_mul,  // M-extension multiply (MUL/MULH/MULHSU/MULHU)
+    output logic is_m_div   // M-extension divide (DIV/DIVU/REM/REMU)
 );
 
   // RV32I opcodes
@@ -113,6 +117,8 @@ module kv32_decoder
     use_zimm     = 1'b0;
     is_ecall     = 1'b0;
     is_ebreak    = 1'b0;
+    is_m_mul     = 1'b0;
+    is_m_div     = 1'b0;
 
     unique case (opcode)
       OpLui: begin
@@ -211,72 +217,81 @@ module kv32_decoder
       end
 
       OpReg: begin
-        alu_op_valid = 1'b1;
-        reg_write    = 1'b1;
+        reg_write = 1'b1;
 
-        unique case (funct3)
-          3'b000: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluAdd;  // ADD
-            end else if (funct7 == 7'b0100000) begin
-              alu_op = AluSub;  // SUB
-            end else begin
-              illegal = 1'b1;
+        if (funct7 == 7'b0000001) begin
+          // M extension: MUL/MULH/MULHSU/MULHU (funct3=000..011)
+          //              DIV/DIVU/REM/REMU (funct3=100..111)
+          // Result comes from M-unit, not ALU — do NOT set alu_op_valid
+          is_m_mul = ~funct3[2];  // funct3[2]==0: multiply
+          is_m_div = funct3[2];  // funct3[2]==1: divide
+        end else begin
+          alu_op_valid = 1'b1;
+
+          unique case (funct3)
+            3'b000: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluAdd;  // ADD
+              end else if (funct7 == 7'b0100000) begin
+                alu_op = AluSub;  // SUB
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b001: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluSll;  // SLL
-            end else begin
-              illegal = 1'b1;
+            3'b001: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluSll;  // SLL
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b010: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluSlt;  // SLT
-            end else begin
-              illegal = 1'b1;
+            3'b010: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluSlt;  // SLT
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b011: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluSltu;  // SLTU
-            end else begin
-              illegal = 1'b1;
+            3'b011: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluSltu;  // SLTU
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b100: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluXor;  // XOR
-            end else begin
-              illegal = 1'b1;
+            3'b100: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluXor;  // XOR
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b101: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluSrl;  // SRL
-            end else if (funct7 == 7'b0100000) begin
-              alu_op = AluSra;  // SRA
-            end else begin
-              illegal = 1'b1;
+            3'b101: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluSrl;  // SRL
+              end else if (funct7 == 7'b0100000) begin
+                alu_op = AluSra;  // SRA
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b110: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluOr;  // OR
-            end else begin
-              illegal = 1'b1;
+            3'b110: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluOr;  // OR
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          3'b111: begin
-            if (funct7 == 7'b0000000) begin
-              alu_op = AluAnd;  // AND
-            end else begin
-              illegal = 1'b1;
+            3'b111: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = AluAnd;  // AND
+              end else begin
+                illegal = 1'b1;
+              end
             end
-          end
-          default: illegal = 1'b1;
-        endcase
+            default: illegal = 1'b1;
+          endcase
+        end
       end
 
       OpMiscMem: begin
