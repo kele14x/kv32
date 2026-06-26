@@ -12,6 +12,7 @@ architectural specification see [../SPEC.md](../SPEC.md); for build/usage see
 | [csr.md](csr.md)                   | M-mode CSR file, address map, read/write/set/clear, legality, MRET, counters | `kv32_csr.sv`                                    |
 | [traps.md](traps.md)               | Trap detection (illegal/ECALL/EBREAK), pipeline flush, mtvec redirect, MRET  | `kv32_core.sv`, `kv32_csr.sv`                    |
 | [verification.md](verification.md) | Unit tests, integration testbench, riscv-tests, simulator options            | `tb/*.cpp`                                       |
+| [code_review.md](code_review.md)   | Outstanding review items (2026-06-25): high/medium/low priority fixes        | All RTL files                                    |
 
 Each doc references the relevant RTL files by name so you can jump straight
 into the RTL. Phase/roadmap context lives in [SPEC.md §14](../SPEC.md).

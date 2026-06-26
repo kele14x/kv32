@@ -58,9 +58,7 @@ module kv32_core
   // Memory front-end outputs
   logic [31:0] fe_rdata;
   logic        fe_rdata_valid;
-  // verilator lint_off UNUSEDSIGNAL
   logic        fe_err;
-  // verilator lint_on UNUSEDSIGNAL
 
   // Instruction memory: direct passthrough from IF stage
   assign imem_req   = i_req && !i_wait_resp;
@@ -250,12 +248,15 @@ module kv32_core
   assign instr_retired = instr_valid_wb && !mem_stall;
 
   // -------------------------------------------------------------------------
-  // Trap detection (EX stage): illegal, ECALL, EBREAK
+  // Trap detection: MEM-stage (access fault) and EX-stage (illegal/ecall/ebreak)
   // RISC-V mcause codes:
   //   2 = Illegal instruction
-  //   8 = Environment call from U-mode (use 11 for M-mode)
   //   3 = Breakpoint
-  // In Phase 1 (M-mode only), ECALL uses cause 11.
+  //   5 = Load access fault
+  //   7 = Store/AMO access fault
+  //   11 = Environment call from M-mode
+  // Priority: MEM-stage access fault (earlier instruction) > EX-stage traps.
+  // EX-stage priority per SPEC: breakpoint > ecall > illegal instruction.
   // -------------------------------------------------------------------------
   always_comb begin
     trap_taken = 1'b0;
@@ -264,18 +265,25 @@ module kv32_core
     trap_val   = 32'h0;
 
     if (!mem_stall) begin
-      if (illegal_ex || csr_illegal) begin
+      // MEM-stage trap: load/store access fault (checked first — earlier instruction)
+      if (fe_err && fe_rdata_valid) begin
         trap_taken = 1'b1;
-        trap_cause = 32'd2;  // Illegal instruction
-        trap_val   = instr_ex;  // The bad instruction
-      end else if (is_ecall_ex) begin
-        trap_taken = 1'b1;
-        trap_cause = 32'd11;  // Environment call from M-mode
-        trap_val   = 32'h0;
+        trap_pc    = pc_mem;
+        trap_cause = mem_write_mem ? 32'd7 : 32'd5;  // Store / Load access fault
+        trap_val   = mem_addr_mem;  // Faulting address
+        // EX-stage traps: breakpoint > ecall > illegal
       end else if (is_ebreak_ex) begin
         trap_taken = 1'b1;
         trap_cause = 32'd3;  // Breakpoint
         trap_val   = pc_ex;
+      end else if (is_ecall_ex) begin
+        trap_taken = 1'b1;
+        trap_cause = 32'd11;  // Environment call from M-mode
+        trap_val   = 32'h0;
+      end else if (illegal_ex || csr_illegal) begin
+        trap_taken = 1'b1;
+        trap_cause = 32'd2;  // Illegal instruction
+        trap_val   = instr_ex;  // The bad instruction
       end
     end
   end
@@ -639,6 +647,12 @@ module kv32_core
       reg_write_wb   <= 1'b0;
       wb_data        <= 32'h0;
       instr_valid_wb <= 1'b0;
+    end else if (fe_err && fe_rdata_valid) begin
+      // Access fault: squash the faulting load/store from writing back
+      rd_wb          <= 5'h0;
+      reg_write_wb   <= 1'b0;
+      wb_data        <= 32'h0;
+      instr_valid_wb <= 1'b0;  // Faulting instruction does not retire
     end else if (!mem_stall) begin
       rd_wb          <= rd_mem;
       reg_write_wb   <= reg_write_mem;

@@ -41,6 +41,99 @@ IF → ID → EX → MEM → WB
 
 **Note**: FPU is the single largest RTL block. Consider deferring if boot-time is acceptable with kernel FPU emulation (Linux can trap-and-emulate FP instructions).
 
+### 1.4 M Extension (Integer Multiply/Divide)
+
+RV32M adds 8 instructions in two groups, all sharing `funct7 = 7'b0000001`:
+
+| Instruction | funct3 | Type   | Result          |
+| ----------- | ------ | ------ | --------------- |
+| `MUL`       | 000    | Mul    | `result[31:0]`  |
+| `MULH`      | 001    | Mul    | `result[63:32]` |
+| `MULHSU`    | 010    | Mul    | `result[63:32]` |
+| `MULHU`     | 011    | Mul    | `result[63:32]` |
+| `DIV`       | 100    | Div    | quotient        |
+| `DIVU`      | 101    | Div    | quotient        |
+| `REM`       | 110    | Div    | remainder       |
+| `REMU`      | 111    | Div    | remainder       |
+
+**Architecture**: a dedicated M-unit (`kv32_m_unit`) is instantiated alongside the ALU in the EX stage. Like the memory subsystem, the M-unit is multi-cycle and stalls the pipeline until completion via the existing `ex_stall` mechanism (§1.1).
+
+**Pipeline integration**:
+
+1. **Decode**: the decoder asserts `is_m_mul` or `is_m_div` based on `funct7`/`funct3`.
+2. **EX entry**: when an M-extension instruction enters EX, the M-unit begins computation using the forwarded operands (`fwd_a`, `fwd_b`). `m_busy` is asserted, stalling the entire pipeline via `ex_stall`.
+3. **Completion**: after N cycles the M-unit asserts `m_done` and presents the result. On the next rising edge (with `m_busy` deasserted), the result is latched into the EX/MEM register through `ex_result`.
+4. **Forwarding**: once in MEM, the existing MEM→EX forwarding path delivers the result to any dependent instruction now entering EX. No new forwarding paths are needed.
+5. **Stall propagation**: `ex_stall` is extended:
+   ```text
+   ex_stall = mem_stall || m_busy
+   ```
+   Backpressure propagates upstream through `id_stall` and `if_stall` exactly as it does for memory stalls.
+
+**`ex_result` mux** priority (addition to existing mux):
+
+```text
+ex_result = is_m_op   ? m_result    :
+            is_csr_ex  ? csr_rdata   :
+            lui_ex     ? imm_ex      :
+            (alu_op_valid_ex || auipc_ex) ? alu_result :
+            pc_ex + 4;
+```
+
+**Hazard handling**: the multi-cycle stall naturally resolves data hazards — a dependent instruction is held in ID for the entire duration of the M operation. By the time it enters EX, the M result is already in MEM and available through the existing MEM→EX forwarding path. No additional `load_use_hazard`-style detection is needed for M→ALU or M→M dependencies.
+
+**Gating**: like other single-execution operations, M-unit activation is gated by `!ex_stall` (from other sources) and `!trap_taken` to prevent re-execution during a stall or on a squashed instruction.
+
+### 1.4.1 Multiplication semantics
+
+- **MUL**: returns the lower 32 bits of the 64-bit product. Identical for signed and unsigned inputs.
+- **MULH**: returns the upper 32 bits of `signed(rs1) × signed(rs2)`.
+- **MULHSU**: returns the upper 32 bits of `signed(rs1) × unsigned(rs2)`.
+- **MULHU**: returns the upper 32 bits of `unsigned(rs1) × unsigned(rs2)`.
+
+The full 64-bit product is computed internally; the `funct3` selects which half is written to `rd`.
+
+### 1.4.2 Division semantics
+
+**Division by zero** (per RISC-V spec — no trap):
+
+| Instruction | Result when `rs2 == 0`     |
+| ----------- | -------------------------- |
+| `DIV`       | `-1` (`0xFFFFFFFF`)       |
+| `DIVU`      | `2^32 - 1` (`0xFFFFFFFF`)|
+| `REM`       | `rs1` (the dividend)      |
+| `REMU`      | `rs1` (the dividend)      |
+
+**Signed overflow** (`DIV`/`REM` only, when `rs1 == INT_MIN` and `rs2 == -1`):
+
+| Instruction | Result                     |
+| ----------- | -------------------------- |
+| `DIV`       | `INT_MIN` (`0x80000000`)  |
+| `REM`       | `0`                        |
+
+Both special cases are detected combinationally at M-unit entry and resolved without running the iterative divider (0-cycle latency for these cases).
+
+### 1.4.3 Hardware implementation
+
+**Multiplier**:
+
+- 32×32 → 64-bit multiplication.
+- Target latency: **2–3 cycles** (registered output stages).
+- On FPGA: write as a registered `a * b` expression and let synthesis infer DSP blocks (Xilinx DSP48E2, Intel DSP Block). DSP blocks are internally pipelined, giving 1 result per 2–3 cycles with 1-cycle throughput once the pipeline is full — though the stall-based approach means we don't exploit throughput across back-to-back multiplies.
+- Alternative: a pure combinational `a * b` followed by a single output register (1-cycle latency), but this will likely fail timing closure at high Fmax on a 32×32 multiply.
+
+**Divider**:
+
+- 32-bit division (signed and unsigned variants).
+- **Iterative non-restoring division**: 1 bit per cycle → 32 cycles + 1 cycle for sign correction (signed variants only) = 32–33 cycles total.
+- **Radix-4 variant** (optional): 2 bits per cycle → 16 cycles + 1 sign correction. More complex per-cycle logic but halves latency.
+- Default: radix-2 for simplicity; radix-4 can be added later if division latency is a bottleneck.
+- Division by zero and signed overflow (§1.4.2) are detected before the iterative loop starts and short-circuit to the result immediately.
+
+**Signed magnitude conversion**: for signed DIV/REM, the operands are converted to magnitude (absolute value) before the unsigned divider, and the result signs are applied afterward:
+- Quotient sign = `rs1_sign XOR rs2_sign`
+- Remainder sign = `rs1_sign`
+
 ---
 
 ## 2. Privilege Modes
@@ -191,12 +284,18 @@ Note on response signals:
    The slave may delay `*_gnt`, but once the request is accepted it must
    eventually return exactly one `*_ack` pulse for that request.
 
-3. **One outstanding transaction per port**: the outstanding count for a port
-   increments on `*_req && *_gnt` and decrements on `*_ack`. The port must never
-   exceed one outstanding request. A master may keep `*_req` asserted while a
-   response is pending, but the slave must only assert `*_gnt` when doing so
-   would keep the outstanding count at 0 or 1 (for example, `*_gnt` may coincide
-   with `*_ack` to accept the next request back-to-back).
+3. **One outstanding transaction per port (master-enforced)**: the response
+   path has only `*_ack` — no ready/backpressure signal — so the master must
+   always accept a response when it arrives. To avoid needing an internal
+   response buffer, the master is designed to issue at most one outstanding
+   request at a time: it waits for `*_ack` before sending the next request.
+   This is a deliberate design simplification of the interface.
+
+   The slave is **not** responsible for enforcing this limit. If the slave has
+   its own internal buffer constraints, it simply deasserts `*_gnt` to reject
+   new requests until it is ready. Because the master guarantees at most one
+   outstanding request, the slave never needs to track outstanding counts or
+   manage response ordering.
 
 4. **Variable latency**: `*_ack` may arrive 0, 1, or many cycles after the
    request is accepted. Zero-latency is legal: `*_req && *_gnt && *_ack` may all
@@ -655,7 +754,7 @@ Implemented registers:
 ## 14. Implementation Order
 
 1. **Phase 1 — RV32I base**: IF/ID/EX/MEM/WB datapath, register file, ALU, branch, load/store, CSR file (M-mode only), dual `imem_*`/`dmem_*` memory ports with `kv32_mem_fe` handling sub-word and misaligned data access (§4). Run `riscv-tests` M-mode binaries.
-2. **Phase 2 — M extension**: multiplier (multi-cycle or pipelined), divider. Verify with `rv32mi` tests.
+2. **Phase 2 — M extension** (`kv32_m_unit`): multiplier (FPGA DSP-inferred, 2–3 cycles) and iterative divider (radix-2, 32–33 cycles). Integrates via existing `ex_stall` mechanism — no new forwarding paths or pipeline stages needed (§1.4). Verify with `rv32mi` tests.
 3. **Phase 3 — C extension**: instruction decompressor (16-bit → 32-bit) at IF output. Verify with `rv32uc`.
 4. **Phase 4 — A extension**: LR/SC with reservation register; AMO operations. `rv32ua` tests.
 5. **Phase 5 — Privilege**: M/S/U modes, trap delegation, `mret`/`sret`, `mideleg`/`medeleg`. Boot a minimal S-mode payload.
