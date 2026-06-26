@@ -68,11 +68,11 @@ module kv32_csr
 
   // -------------------------------------------------------------------------
   // misa fixed value: MXL=01 (32-bit).
-  // Phase 2: I and M extensions are implemented.
+  // Phase 3: I, M, and C extensions are implemented.
   // Extensions bitmap (bits [25:0]): A=0, C=2, D=3, F=5, I=8, M=12, S=18, U=20.
   // Update this value as each extension lands.
   // -------------------------------------------------------------------------
-  localparam logic [31:0] MisaVal = {2'b01, 4'b0000, 26'b00_0000_0001_0001_0000_0000};
+  localparam logic [31:0] MisaVal = {2'b01, 4'b0000, 26'b00_0000_0001_0001_0000_0100};
 
   // -------------------------------------------------------------------------
   // CSR storage registers
@@ -146,8 +146,7 @@ module kv32_csr
                 CsrMscratch, CsrMepc, CsrMcause, CsrMtval, CsrMip,
                 CsrMcycle, CsrMcycleh, CsrMinstret, CsrMinstreth:
         csr_illegal = 1'b0;  // implemented, read-write
-        CsrMisa, CsrMstatush,
-                CsrMvendorid, CsrMarchid, CsrMimpid, CsrMhartid, CsrMconfigptr:
+        CsrMisa, CsrMstatush, CsrMvendorid, CsrMarchid, CsrMimpid, CsrMhartid, CsrMconfigptr:
         csr_illegal = csr_wen;  // read-only: write is illegal
         default: csr_illegal = 1'b1;  // unimplemented: any access illegal
       endcase

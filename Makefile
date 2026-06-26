@@ -66,6 +66,7 @@ RTL_SOURCES = \
     $(RTL_DIR)/kv32_m_unit.sv \
     $(RTL_DIR)/kv32_regfile.sv \
     $(RTL_DIR)/kv32_csr.sv \
+    $(RTL_DIR)/kv32_decompressor.sv \
     $(RTL_DIR)/kv32_decoder.sv \
     $(RTL_DIR)/kv32_mem_fe.sv \
     $(RTL_DIR)/kv32_core.sv
@@ -134,6 +135,12 @@ $(RISCV_TESTS_BUILD)/rv32um-p-%: $(RISCV_TESTS_DIR)/isa/rv32um/%.S $(RISCV_TESTS
 	$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32im_zicsr -mabi=$(RISCV_MABI) \
 		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
 
+# Compile a single rv32uc test (C extension: compressed instructions)
+$(RISCV_TESTS_BUILD)/rv32uc-p-%: $(RISCV_TESTS_DIR)/isa/rv32uc/%.S $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
+	@echo "  CC  $* (C ext)"; \
+	$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32ic_zicsr -mabi=$(RISCV_MABI) \
+		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
+
 $(RISCV_TESTS_BUILD):
 	@mkdir -p $@
 
@@ -159,6 +166,15 @@ riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
 		fi; \
 	done
+	@for test in $(RISCV_TESTS_DIR)/isa/rv32uc/*.S; do \
+		name=$$(basename $$test .S); \
+		target=$(RISCV_TESTS_BUILD)/rv32uc-p-$$name; \
+		if [ ! -f $$target ]; then \
+			echo "  CC  $$name (C ext)"; \
+			$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32ic_zicsr -mabi=$(RISCV_MABI) \
+				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
+		fi; \
+	done
 
 # Run a single riscv-test: make riscv-test-TESTNAME
 riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
@@ -168,10 +184,14 @@ riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
 riscv-test-m-%: verilator-build $(RISCV_TESTS_BUILD)/rv32um-p-%
 	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32um-p-$* $(MEM_LATENCY_ARGS)
 
-# Run all rv32ui and rv32um tests (auto-compiles if needed, skips .dump files)
+# Run a single C-extension test: make riscv-test-c-TESTNAME
+riscv-test-c-%: verilator-build $(RISCV_TESTS_BUILD)/rv32uc-p-%
+	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32uc-p-$* $(MEM_LATENCY_ARGS)
+
+# Run all rv32ui, rv32um, and rv32uc tests (auto-compiles if needed, skips .dump files)
 riscv-tests: verilator-build riscv-tests-compile
 	@pass=0; fail=0; skip=0; total=0; \
-	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-* $(RISCV_TESTS_BUILD)/rv32um-p-*; do \
+	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-* $(RISCV_TESTS_BUILD)/rv32um-p-* $(RISCV_TESTS_BUILD)/rv32uc-p-*; do \
 		case "$$test" in *.dump) continue;; esac; \
 		name=$$(basename $$test); \
 		total=$$((total+1)); \
@@ -196,7 +216,7 @@ riscv-tests: verilator-build riscv-tests-compile
 # Each target builds and runs an isolated testbench for one submodule.
 # This catches RTL bugs at the module boundary before integration.
 
-UNIT_TESTS = alu regfile decoder csr mem_fe m_unit
+UNIT_TESTS = alu regfile decoder decompressor csr mem_fe m_unit
 
 unit-test-alu: $(TB_DIR)/tb_alu.cpp $(RTL_DIR)/kv32_alu.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
@@ -218,6 +238,13 @@ unit-test-decoder: $(TB_DIR)/tb_decoder.cpp $(RTL_DIR)/kv32_decoder.sv | build
 		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_decoder.sv $(TB_DIR)/tb_decoder.cpp \
 		--Mdir build/obj_dir_decoder
 	./build/obj_dir_decoder/Vkv32_decoder
+
+unit-test-decompressor: $(TB_DIR)/tb_decompressor.cpp $(RTL_DIR)/kv32_decompressor.sv | build
+	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
+		--top-module kv32_decompressor \
+		$(RTL_DIR)/kv32_decompressor.sv $(TB_DIR)/tb_decompressor.cpp \
+		--Mdir build/obj_dir_decompressor
+	./build/obj_dir_decompressor/Vkv32_decompressor
 
 unit-test-csr: $(TB_DIR)/tb_csr.cpp $(RTL_DIR)/kv32_csr.sv | build
 	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
@@ -294,7 +321,7 @@ clean-integration:
 	@rm -rf build/obj_dir
 
 clean-unit:
-	@rm -rf build/obj_dir_alu build/obj_dir_regfile build/obj_dir_decoder build/obj_dir_csr build/obj_dir_mem_fe
+	@rm -rf build/obj_dir_alu build/obj_dir_regfile build/obj_dir_decoder build/obj_dir_decompressor build/obj_dir_csr build/obj_dir_mem_fe build/obj_dir_m_unit
 
 clean-riscv-tests:
 	@rm -rf build/riscv-tests

@@ -46,27 +46,49 @@ module kv32_core
     ST_WRITEBACK
   } state_t;
 
-  state_t state;
+  state_t        state;
 
   // Current instruction's PC and instruction word
-  logic [31:0] pc_reg;
-  logic [31:0] instr_reg;
+  logic   [31:0] pc_reg;
+  logic   [31:0] instr_reg;
 
   // Fetch handshake tracking
-  logic fetch_req;
-  logic fetch_wait;
+  logic          fetch_req;
+  logic          fetch_wait;
 
   // Latched results from EXEC (for MEM/WRITEBACK)
-  logic [31:0] ex_result_reg;
-  logic [31:0] rs2_data_reg;
-  logic [31:0] load_data_reg;  // Latched load data from mem_fe
+  logic   [31:0] ex_result_reg;
+  logic   [31:0] rs2_data_reg;
+  logic   [31:0] load_data_reg;  // Latched load data from mem_fe
 
   // Branch/jump redirect target (latched in EXEC, used in WRITEBACK)
-  logic [31:0] branch_target_reg;
-  logic branch_redirect;
+  logic   [31:0] branch_target_reg;
+  logic          branch_redirect;
 
   // Access fault from MEM state — prevents writeback on fault
-  logic trap_from_mem;
+  logic          trap_from_mem;
+
+  // ===========================================================================
+  // C extension: instruction alignment and decompression
+  // ===========================================================================
+  // With C extension, PC can be half-word-aligned (pc[1:0] = 00 or 10).
+  // Always fetch full 32-bit words, then extract the instruction:
+  // - pc[1]=0: instruction starts at bits[15:0]
+  //   - bits[1:0] != 11: 16-bit compressed instruction
+  //   - bits[1:0] == 11: 32-bit instruction
+  // - pc[1]=1: instruction starts at bits[31:16]
+  //   - bits[17:16] != 11: 16-bit compressed instruction
+  //   - bits[17:16] == 11: 32-bit instruction straddling word boundary
+  //     (requires second fetch of next word)
+  // ===========================================================================
+
+  logic          fetch_second;  // Second fetch needed for straddling
+  logic   [15:0] instr_half;  // Upper half of straddling instruction
+  logic          is_compressed_reg;  // Latched version for EXEC/MEM/WB
+
+  // Word-align the fetch address
+  logic   [31:0] fetch_addr;
+  assign fetch_addr = fetch_second ? {pc_reg[31:2] + 30'd1, 2'b00} : {pc_reg[31:2], 2'b00};
 
   // ===========================================================================
   // Instruction memory interface (driven during FETCH state)
@@ -77,7 +99,7 @@ module kv32_core
   // verilator lint_on UNUSEDSIGNAL
 
   assign imem_req   = (state == ST_FETCH) && fetch_req && !fetch_wait;
-  assign imem_addr  = pc_reg;
+  assign imem_addr  = fetch_addr;
   assign imem_we    = 1'b0;
   assign imem_size  = 2'b10;  // always word
   assign imem_wdata = 32'h0;
@@ -129,6 +151,19 @@ module kv32_core
   );
 
   // ===========================================================================
+  // Decompressor (C extension — expands 16-bit instructions to 32-bit)
+  // ===========================================================================
+
+  logic [31:0] instr_decompressed;
+  logic        decomp_illegal;
+
+  kv32_decompressor u_decompressor (
+      .instr   (instr_reg[15:0]),
+      .expanded(instr_decompressed),
+      .illegal (decomp_illegal)
+  );
+
+  // ===========================================================================
   // Decoder (combinational — decodes instr_reg)
   // ===========================================================================
 
@@ -144,8 +179,16 @@ module kv32_core
   logic is_ecall_id, is_ebreak_id;
   logic is_m_mul_id, is_m_div_id;
 
+  // Select decompressed or raw instruction for decoder
+  logic [31:0] decoder_instr;
+  assign decoder_instr = is_compressed_reg ? instr_decompressed : instr_reg;
+
+  // Illegal if decompressor flagged it (for compressed instructions)
+  logic illegal_combined;
+  assign illegal_combined = (is_compressed_reg & decomp_illegal) | illegal_id;
+
   kv32_decoder u_decoder (
-      .instr       (instr_reg),
+      .instr       (decoder_instr),
       .rd          (rd_id),
       .funct3      (funct3_id),
       .rs1         (rs1_id),
@@ -303,10 +346,19 @@ module kv32_core
         trap_taken = 1'b1;
         trap_cause = 32'd11;  // Environment call from M-mode
         trap_val   = 32'h0;
-      end else if (illegal_id || csr_illegal) begin
+      end else if (illegal_combined || csr_illegal) begin
         trap_taken = 1'b1;
         trap_cause = 32'd2;  // Illegal instruction
         trap_val   = instr_reg;
+      end else if (branch_taken && branch_target[0]) begin
+        // H3: instruction-address-misaligned trap (cause 0)
+        // With C extension, instructions can be half-word-aligned (bit[1:0] = 00 or 10)
+        // but bit[0] must always be 0. JALR clears bit 0 with & ~32'h1, and
+        // branch/jump immediates always have bit[0]=0, so this should never fire
+        // in correct code — it's a safety net for software bugs.
+        trap_taken = 1'b1;
+        trap_cause = 32'd0;  // Instruction address misaligned
+        trap_val   = branch_target;
       end
     end else if (state == ST_MEM) begin
       // MEM-stage access fault
@@ -376,7 +428,7 @@ module kv32_core
     end else if (alu_op_valid_id || auipc_id) begin
       ex_result = alu_result;
     end else begin
-      ex_result = pc_reg + 4;  // For JAL/JALR link address
+      ex_result = pc_reg + (is_compressed_reg ? 32'd2 : 32'd4);  // For JAL/JALR link address
     end
   end
 
@@ -460,6 +512,9 @@ module kv32_core
       instr_reg         <= 32'h0;
       fetch_req         <= 1'b1;
       fetch_wait        <= 1'b0;
+      fetch_second      <= 1'b0;
+      instr_half        <= 16'h0;
+      is_compressed_reg <= 1'b0;
       ex_result_reg     <= 32'h0;
       rs2_data_reg      <= 32'h0;
       load_data_reg     <= 32'h0;
@@ -479,11 +534,44 @@ module kv32_core
           end
 
           if (imem_ack) begin
-            // Instruction fetch complete — latch and advance
-            instr_reg  <= imem_rdata;
             fetch_req  <= 1'b0;
             fetch_wait <= 1'b0;
-            state      <= ST_DECODE;
+
+            if (fetch_second) begin
+              // Second fetch for straddling 32-bit instruction complete
+              // Assemble: {second_word[15:0], first_word[31:16]}
+              instr_reg         <= {imem_rdata[15:0], instr_half};
+              is_compressed_reg <= 1'b0;
+              fetch_second      <= 1'b0;
+              state             <= ST_DECODE;
+            end else if (pc_reg[1]) begin
+              // pc[1]=1: instruction starts at upper halfword
+              if (imem_rdata[17:16] != 2'b11) begin
+                // 16-bit compressed instruction in upper halfword
+                instr_reg         <= {16'h0, imem_rdata[31:16]};
+                is_compressed_reg <= 1'b1;
+                state             <= ST_DECODE;
+              end else begin
+                // 32-bit instruction straddling word boundary
+                // Latch upper half, fetch next word for lower half
+                instr_half   <= imem_rdata[31:16];
+                fetch_second <= 1'b1;
+                // Stay in ST_FETCH — next fetch will get the second word
+              end
+            end else begin
+              // pc[1]=0: instruction starts at lower halfword
+              if (imem_rdata[1:0] != 2'b11) begin
+                // 16-bit compressed instruction in lower halfword
+                instr_reg         <= {16'h0, imem_rdata[15:0]};
+                is_compressed_reg <= 1'b1;
+                state             <= ST_DECODE;
+              end else begin
+                // 32-bit instruction, fully contained in fetched word
+                instr_reg         <= imem_rdata;
+                is_compressed_reg <= 1'b0;
+                state             <= ST_DECODE;
+              end
+            end
           end else if (!fetch_req && !fetch_wait) begin
             // No request outstanding — issue one
             fetch_req <= 1'b1;
@@ -546,11 +634,12 @@ module kv32_core
 
         ST_WRITEBACK: begin
           // Update PC: use redirect target if branch was taken, else increment
+          // Compressed instructions advance PC by 2, full instructions by 4
           if (branch_redirect) begin
             pc_reg          <= branch_target_reg;
             branch_redirect <= 1'b0;
           end else begin
-            pc_reg <= pc_reg + 32'd4;
+            pc_reg <= pc_reg + (is_compressed_reg ? 32'd2 : 32'd4);
           end
           fetch_req  <= 1'b1;
           fetch_wait <= 1'b0;

@@ -86,7 +86,7 @@ int main() {
 
     // ---- Reset values ----
     expect_eq("reset mstatus", read_csr(d, CsrMstatus), 0x00001800); // mpp=11
-    expect_eq("reset misa", read_csr(d, CsrMisa), 0x40001100);       // I+M
+    expect_eq("reset misa", read_csr(d, CsrMisa), 0x40001104);       // I+M+C
     expect_eq("reset mie", read_csr(d, CsrMie), 0);
     expect_eq("reset mtvec", read_csr(d, CsrMtvec), 0);
     expect_eq("reset mscratch", read_csr(d, CsrMscratch), 0);
@@ -138,7 +138,7 @@ int main() {
 
     // ---- Read-only CSRs ignore writes ----
     write_csr(d, CsrMisa, 0xFFFFFFFF);
-    expect_eq("misa write ignored", read_csr(d, CsrMisa), 0x40001100);
+    expect_eq("misa write ignored", read_csr(d, CsrMisa), 0x40001104);
     write_csr(d, CsrMvendorid, 0xFFFFFFFF);
     expect_eq("mvendorid write ignored", read_csr(d, CsrMvendorid), 0);
     write_csr(d, CsrMstatush, 0xFFFFFFFF);
