@@ -30,6 +30,7 @@ module kv32_mem_fe (
     input logic [ 1:0] size,
     input logic [31:0] wdata,
     input logic [ 2:0] funct3,
+    input logic        excl,
 
     output logic [31:0] rdata,
     output logic        rdata_valid,
@@ -42,9 +43,7 @@ module kv32_mem_fe (
     output logic [ 1:0] dmem_size,
     output logic [31:0] dmem_wdata,
     output logic [ 3:0] dmem_be,
-    // verilator lint_off UNUSEDSIGNAL
     output logic        dmem_excl,
-    // verilator lint_on UNUSEDSIGNAL
     input  logic        dmem_gnt,
     input  logic        dmem_ack,
     input  logic [31:0] dmem_rdata,
@@ -274,7 +273,7 @@ module kv32_mem_fe (
     dmem_size  = size;
     dmem_wdata = aligned_wdata;
     dmem_be    = aligned_be;
-    dmem_excl  = 1'b0;
+    dmem_excl  = excl;
 
     unique case (ma_state)
       MA_IDLE: begin

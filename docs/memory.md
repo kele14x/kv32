@@ -159,3 +159,76 @@ the standard extraction logic works uniformly:
 (right by 8 so the LH extractor keyed on `addr[1]=0` picks up bytes 1-2)
 relies on this exact-case assumption. Do not generalize the detector without
 revisiting that shift.
+
+## LR/SC and AMO operations (A extension)
+
+The A extension adds atomic instructions that require special handling in the
+memory subsystem. These are decoded by `OpAmo` (opcode `0101111`) and handled
+in the MEM state of the FSM.
+
+### Exclusive access hint (`dmem_excl`)
+
+The `dmem_excl` signal is asserted for LR.W and SC.W operations (but not AMO).
+It is a hint to the memory subsystem that this transaction requires exclusive
+access. In a multi-hart system, this would be used by the cache coherence
+protocol or bus interconnect to track reservations. In this single-hart
+implementation, the signal is driven but ignored by `kv32_mem_fe` and the
+testbench memory model.
+
+### LR.W (Load-Reserved)
+
+LR.W performs a normal word load and sets a reservation:
+
+1. **EXEC**: ALU computes effective address `rs1 + 0`.
+2. **MEM**: normal word load via `dmem_req`/`dmem_we=0`/`dmem_excl=1`.
+3. **On success** (`fe_rdata_valid && !fe_err`):
+   - Latch `load_data_reg = fe_rdata`
+   - Set `reservation_valid = 1`, `reservation_addr = ex_result_reg`
+4. **WRITEBACK**: write `load_data_reg` to `rd`.
+
+### SC.W (Store-Conditional)
+
+SC.W conditionally stores based on the reservation:
+
+1. **EXEC**: ALU computes effective address `rs1 + 0`.
+2. **MEM**: check reservation:
+   - If `reservation_valid && reservation_addr == ex_result_reg`:
+     - Issue store: `dmem_req=1`, `dmem_we=1`, `dmem_excl=1`, `dmem_wdata=rs2_data_reg`
+     - Wait for `fe_rdata_valid`
+     - On success: write `rd = 0`, clear reservation
+     - On error: trap with cause 7 (Store/AMO access fault)
+   - Else (reservation invalid or address mismatch):
+     - Skip memory access entirely
+     - Write `rd = 1` (failure)
+     - Clear reservation
+3. **WRITEBACK**: write `sc_result` (0 or 1) to `rd`.
+
+**Reservation invalidation**: any non-SC store to `reservation_addr` clears the
+reservation. This is checked in the MEM state after a successful store.
+
+### AMO operations (read-modify-write)
+
+AMO operations (AMOSWAP, AMOADD, AMOAND, AMOOR, AMOXOR, AMOMAX, AMOMIN,
+AMOMAXU, AMOMINU) perform atomic read-modify-write in three phases:
+
+1. **EXEC**: ALU computes effective address `rs1 + 0`.
+2. **MEM** (multi-phase, controlled by `amo_state` FSM):
+   - **`AMO_READ_WAIT`**: issue load, wait for `fe_rdata_valid`
+     - Latch `load_data_reg = fe_rdata` (the old value)
+     - Advance to `AMO_WRITE_ISSUE`
+   - **`AMO_WRITE_ISSUE`**: compute `new_val = kv32_amo_unit.op(load_data_reg, rs2_data_reg)`
+     - Issue store: `dmem_req=1`, `dmem_we=1`, `dmem_wdata=new_val`
+     - Advance to `AMO_WRITE_WAIT`
+   - **`AMO_WRITE_WAIT`**: wait for `fe_rdata_valid`
+     - On success: advance to WRITEBACK
+     - On error: trap with cause 7 (Store/AMO access fault)
+3. **WRITEBACK**: write `load_data_reg` (the old value) to `rd`.
+
+**AMO unit**: `kv32_amo_unit` is a combinational module that computes the
+result of the AMO operation based on `funct5` (bits 31:27). It supports all 9
+AMO operations: SWAP, ADD, AND, OR, XOR, MAX, MIN, MAXU, MINU.
+
+**Address alignment**: all A-extension instructions require word-aligned
+addresses (`addr[1:0] == 00`). Misaligned addresses trap in EXEC with cause 4
+(LR) or cause 6 (SC/AMO).
+

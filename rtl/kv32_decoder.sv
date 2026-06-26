@@ -35,7 +35,12 @@ module kv32_decoder
 
     // M extension control signals
     output logic is_m_mul,  // M-extension multiply (MUL/MULH/MULHSU/MULHU)
-    output logic is_m_div   // M-extension divide (DIV/DIVU/REM/REMU)
+    output logic is_m_div,  // M-extension divide (DIV/DIVU/REM/REMU)
+
+    // A extension control signals
+    output logic is_lr,  // LR.W instruction
+    output logic is_sc,  // SC.W instruction
+    output logic is_amo  // AMO* instruction (read-modify-write)
 );
 
   // RV32I opcodes
@@ -50,6 +55,9 @@ module kv32_decoder
                            OpReg      = 7'b0110011,
                            OpMiscMem = 7'b0001111,
                            OpSystem   = 7'b1110011;
+
+  // A extension opcode
+  localparam logic [6:0] OpAmo = 7'b0101111;
 
   // Extract fields
   logic [6:0] opcode;
@@ -119,6 +127,9 @@ module kv32_decoder
     is_ebreak    = 1'b0;
     is_m_mul     = 1'b0;
     is_m_div     = 1'b0;
+    is_lr        = 1'b0;
+    is_sc        = 1'b0;
+    is_amo       = 1'b0;
 
     unique case (opcode)
       OpLui: begin
@@ -375,6 +386,51 @@ module kv32_decoder
           end
           default: illegal = 1'b1;
         endcase
+      end
+
+      OpAmo: begin
+        // A extension: LR.W, SC.W, AMO* instructions
+        // All use R-type format: funct5[31:27] | aq[26] | rl[25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | rd[11:7] | opcode[6:0]
+        // Effective address is rs1 (no offset), so ALU computes rs1 + 0
+        alu_op_valid = 1'b1;
+        alu_op       = AluAdd;
+        reg_write    = 1'b1;
+        use_imm      = 1'b1;  // Address is rs1 + 0 (no offset)
+
+        if (funct3 != 3'b010) begin
+          illegal = 1'b1;  // Only .W (funct3=010) valid in RV32
+        end else begin
+          unique case (instr[31:27])
+            5'b00010: begin
+              // LR.W: rd = [rs1], set reservation
+              is_lr    = 1'b1;
+              mem_read = 1'b1;
+            end
+            5'b00011: begin
+              // SC.W: if reservation valid & matches: [rs1] = rs2, rd = 0; else rd = 1
+              is_sc     = 1'b1;
+              mem_write = 1'b1;
+            end
+            5'b00001,  // AMOSWAP.W
+            5'b00000,  // AMOADD.W
+            5'b01100,  // AMOAND.W
+            5'b01000,  // AMOOR.W
+            5'b00100,  // AMOXOR.W
+            5'b10100,  // AMOMAX.W
+            5'b10000,  // AMOMIN.W
+            5'b11100,  // AMOMAXU.W
+            5'b11000: begin  // AMOMINU.W
+              // AMO*: read-modify-write
+              is_amo    = 1'b1;
+              mem_read  = 1'b1;
+              mem_write = 1'b1;
+            end
+            default: illegal = 1'b1;
+          endcase
+        end
+
+        // .aq and .rl bits (instr[26:25]) are NOPs in this single-hart core
+        // (no out-of-order execution to fence against)
       end
 
       default: begin

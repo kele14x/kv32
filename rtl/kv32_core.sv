@@ -117,6 +117,7 @@ module kv32_core
   logic        d_we;
   logic [ 1:0] d_size;
   logic [31:0] d_wdata;
+  logic        d_excl;
 
   // Memory front-end outputs
   logic [31:0] fe_rdata;
@@ -134,6 +135,7 @@ module kv32_core
       .size       (d_size),
       .wdata      (d_wdata),
       .funct3     (funct3_id),
+      .excl       (d_excl),
       .rdata      (fe_rdata),
       .rdata_valid(fe_rdata_valid),
       .err        (fe_err),
@@ -178,6 +180,7 @@ module kv32_core
   logic csr_wen_id, is_csr_id, is_mret_id, use_zimm_id;
   logic is_ecall_id, is_ebreak_id;
   logic is_m_mul_id, is_m_div_id;
+  logic is_lr_id, is_sc_id, is_amo_id;
 
   // Select decompressed or raw instruction for decoder
   logic [31:0] decoder_instr;
@@ -214,7 +217,10 @@ module kv32_core
       .is_ecall    (is_ecall_id),
       .is_ebreak   (is_ebreak_id),
       .is_m_mul    (is_m_mul_id),
-      .is_m_div    (is_m_div_id)
+      .is_m_div    (is_m_div_id),
+      .is_lr       (is_lr_id),
+      .is_sc       (is_sc_id),
+      .is_amo      (is_amo_id)
   );
 
   // ===========================================================================
@@ -296,6 +302,114 @@ module kv32_core
   );
 
   // ===========================================================================
+  // A extension: AMO compute unit + reservation register
+  // ===========================================================================
+
+  // AMO compute: combinational, takes latched read data and rs2
+  logic [31:0] amo_result;
+  logic [ 4:0] amo_funct5;
+
+  kv32_amo_unit u_amo_unit (
+      .old_val(load_data_reg),
+      .rs2_val(rs2_data_reg),
+      .funct5 (amo_funct5),
+      .result (amo_result)
+  );
+
+  // Reservation register for LR.W / SC.W
+  logic        reservation_valid;
+  logic [31:0] reservation_addr;
+
+  // SC result: 0 = success (reservation valid & address matches), 1 = failure
+  // Latched in ST_MEM, used in ST_WRITEBACK
+  logic [31:0] sc_result_reg;
+  logic        sc_result_valid;
+
+  // AMO phase FSM (read-modify-write within ST_MEM)
+  typedef enum logic [1:0] {
+    AMO_IDLE,
+    AMO_READ_WAIT,    // Read phase in progress
+    AMO_WRITE_ISSUE,  // Write phase ready to issue
+    AMO_WRITE_WAIT    // Write phase in progress
+  } amo_state_t;
+
+  amo_state_t amo_state;
+
+  // Reservation register update
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      reservation_valid <= 1'b0;
+      reservation_addr  <= 32'h0;
+      sc_result_reg     <= 32'h1;
+      sc_result_valid   <= 1'b0;
+    end else if (state == ST_MEM && is_lr_id && fe_rdata_valid && !fe_err) begin
+      // Successful LR.W: set reservation
+      reservation_valid <= 1'b1;
+      reservation_addr  <= ex_result_reg;
+    end else if (state == ST_MEM && is_sc_id &&
+                 (reservation_valid && reservation_addr == ex_result_reg) &&
+                 fe_rdata_valid) begin
+      // Successful SC.W: clear reservation (write committed), latch success result
+      reservation_valid <= 1'b0;
+      sc_result_reg     <= 32'h0;  // Success
+      sc_result_valid   <= 1'b1;
+    end else if (state == ST_MEM && is_sc_id &&
+                 !(reservation_valid && reservation_addr == ex_result_reg)) begin
+      // Failed SC.W (no reservation or mismatch): clear reservation, latch failure result
+      reservation_valid <= 1'b0;
+      sc_result_reg     <= 32'h1;  // Failure
+      sc_result_valid   <= 1'b1;
+    end else if (state == ST_MEM && !is_sc_id && !is_lr_id && mem_write_id &&
+                 fe_rdata_valid && !fe_err &&
+                 reservation_valid && ex_result_reg == reservation_addr) begin
+      // Non-SC store to same address invalidates reservation
+      reservation_valid <= 1'b0;
+    end else if (state == ST_WRITEBACK) begin
+      // Clear SC result valid when leaving ST_WRITEBACK
+      sc_result_valid <= 1'b0;
+    end
+  end
+
+  // AMO phase FSM update
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      amo_state  <= AMO_IDLE;
+      amo_funct5 <= 5'h0;
+    end else begin
+      unique case (amo_state)
+        AMO_IDLE: begin
+          if (state == ST_MEM && is_amo_id) begin
+            amo_funct5 <= instr_reg[31:27];
+            amo_state  <= AMO_READ_WAIT;
+          end
+        end
+        AMO_READ_WAIT: begin
+          if (fe_rdata_valid) begin
+            if (!fe_err) begin
+              amo_state <= AMO_WRITE_ISSUE;
+            end else begin
+              amo_state <= AMO_IDLE;  // Error — abort
+            end
+          end
+        end
+        AMO_WRITE_ISSUE: begin
+          // Hold d_req high until write completes
+          if (fe_rdata_valid) begin
+            amo_state <= AMO_IDLE;
+          end
+        end
+        AMO_WRITE_WAIT: begin
+          // This state is no longer used, but kept for enum completeness
+          if (fe_rdata_valid) begin
+            amo_state <= AMO_IDLE;
+          end
+        end
+        default: amo_state <= AMO_IDLE;
+      endcase
+    end
+  end
+
+  // ===========================================================================
   // CSR module
   // ===========================================================================
 
@@ -350,6 +464,12 @@ module kv32_core
         trap_taken = 1'b1;
         trap_cause = 32'd2;  // Illegal instruction
         trap_val   = instr_reg;
+      end else if ((is_lr_id || is_sc_id || is_amo_id) && ex_result[1:0] != 2'b00) begin
+        // LR/SC/AMO address misalignment: must be word-aligned (bits[1:0] = 00)
+        // LR uses cause 4 (load address misaligned), SC/AMO use cause 6 (store/AMO address misaligned)
+        trap_taken = 1'b1;
+        trap_cause = is_lr_id ? 32'd4 : 32'd6;
+        trap_val   = ex_result;
       end else if (branch_taken && branch_target[0]) begin
         // H3: instruction-address-misaligned trap (cause 0)
         // With C extension, instructions can be half-word-aligned (bit[1:0] = 00 or 10)
@@ -436,13 +556,52 @@ module kv32_core
   // Data memory port (driven during MEM state)
   // ===========================================================================
 
+  // Exclusive access hint for LR/SC (not for AMO — those are regular bus ops)
+  assign d_excl = is_lr_id || is_sc_id;
+
   always_comb begin
     if (state == ST_MEM) begin
-      d_req   = mem_read_id || mem_write_id;
-      d_addr  = ex_result_reg;  // Effective address from EXEC
-      d_we    = mem_write_id;
-      d_size  = funct3_id[1:0];
-      d_wdata = rs2_data_reg;  // Latched rs2 from EXEC
+      d_addr = ex_result_reg;  // Effective address from EXEC
+      d_size = 2'b10;  // LR/SC/AMO are always word (.W)
+
+      if (is_lr_id) begin
+        // LR.W: simple load, reservation set on success
+        d_req   = 1'b1;
+        d_we    = 1'b0;
+        d_wdata = 32'h0;
+      end else if (is_sc_id) begin
+        // SC.W: conditional store (only if reservation valid & address matches)
+        d_req   = reservation_valid && (reservation_addr == ex_result_reg);
+        d_we    = 1'b1;
+        d_wdata = rs2_data_reg;
+      end else if (is_amo_id) begin
+        // AMO*: read-modify-write, multi-phase
+        unique case (amo_state)
+          AMO_IDLE, AMO_READ_WAIT: begin
+            // Read phase: load old value
+            d_req   = 1'b1;
+            d_we    = 1'b0;
+            d_wdata = 32'h0;
+          end
+          AMO_WRITE_ISSUE, AMO_WRITE_WAIT: begin
+            // Write phase: store computed result
+            d_req   = 1'b1;
+            d_we    = 1'b1;
+            d_wdata = amo_result;
+          end
+          default: begin
+            d_req   = 1'b0;
+            d_we    = 1'b0;
+            d_wdata = 32'h0;
+          end
+        endcase
+      end else begin
+        // Normal load/store
+        d_req   = mem_read_id || mem_write_id;
+        d_we    = mem_write_id;
+        d_wdata = rs2_data_reg;
+        d_size  = funct3_id[1:0];
+      end
     end else begin
       d_req   = 1'b0;
       d_addr  = 32'h0;
@@ -456,9 +615,12 @@ module kv32_core
   // Writeback
   // ===========================================================================
 
-  assign regfile_we    = (state == ST_WRITEBACK) && reg_write_id && !trap_from_mem;
-  assign regfile_rd    = rd_id;
-  assign regfile_wdata = mem_read_id ? load_data_reg : ex_result_reg;
+  assign regfile_we = (state == ST_WRITEBACK) && reg_write_id && !trap_from_mem;
+  assign regfile_rd = rd_id;
+  // Writeback mux: SC writes 0/1 (success/failure), loads/AMO write memory data
+  assign regfile_wdata = (is_sc_id && sc_result_valid) ? sc_result_reg :
+                         mem_read_id ? load_data_reg :
+                         ex_result_reg;
 
   // Instruction retired: asserted during WRITEBACK for non-trapping instructions
   assign instr_retired = (state == ST_WRITEBACK) && !trap_from_mem;
@@ -610,25 +772,80 @@ module kv32_core
         end
 
         ST_MEM: begin
-          if (fe_rdata_valid) begin
-            // Memory operation complete — latch load data if it's a load
-            if (mem_read_id) begin
-              load_data_reg <= fe_rdata;
+          if (is_amo_id) begin
+            // AMO: multi-phase read-modify-write
+            unique case (amo_state)
+              AMO_READ_WAIT: begin
+                if (fe_rdata_valid) begin
+                  if (fe_err) begin
+                    // Read phase failed
+                    trap_from_mem <= 1'b1;
+                    pc_reg        <= {mtvec_out[31:2], 2'b00};
+                    fetch_req     <= 1'b1;
+                    fetch_wait    <= 1'b0;
+                    state         <= ST_FETCH;
+                  end else begin
+                    // Read succeeded, latch data and advance to write phase
+                    load_data_reg <= fe_rdata;
+                  end
+                end
+              end
+              AMO_WRITE_ISSUE: begin
+                if (fe_rdata_valid) begin
+                  if (fe_err) begin
+                    // Write phase failed
+                    trap_from_mem <= 1'b1;
+                    pc_reg        <= {mtvec_out[31:2], 2'b00};
+                    fetch_req     <= 1'b1;
+                    fetch_wait    <= 1'b0;
+                    state         <= ST_FETCH;
+                  end else begin
+                    // Write succeeded, advance to writeback
+                    state <= ST_WRITEBACK;
+                  end
+                end
+              end
+              default: ;  // AMO_IDLE, AMO_WRITE_WAIT: wait for state machine
+            endcase
+          end else if (is_sc_id) begin
+            // SC: conditional store based on reservation
+            if (!reservation_valid || reservation_addr != ex_result_reg) begin
+              // Reservation failed: skip write, return 1 (failure)
+              state <= ST_WRITEBACK;
+            end else if (fe_rdata_valid) begin
+              // Reservation succeeded: write completed
+              if (fe_err) begin
+                trap_from_mem <= 1'b1;
+                pc_reg        <= {mtvec_out[31:2], 2'b00};
+                fetch_req     <= 1'b1;
+                fetch_wait    <= 1'b0;
+                state         <= ST_FETCH;
+              end else begin
+                state <= ST_WRITEBACK;
+              end
             end
+          end else begin
+            // Normal load/store or LR
+            if (fe_rdata_valid) begin
+              // Memory operation complete — latch load data if it's a load
+              if (mem_read_id) begin
+                load_data_reg <= fe_rdata;
+              end
 
-            if (fe_err) begin
-              trap_from_mem <= 1'b1;
-              // Trap: redirect PC to mtvec, return to FETCH (skip WRITEBACK)
-              pc_reg        <= {mtvec_out[31:2], 2'b00};
-              fetch_req     <= 1'b1;
-              fetch_wait    <= 1'b0;
-              state         <= ST_FETCH;
-            end else begin
+              if (fe_err) begin
+                trap_from_mem <= 1'b1;
+                // Trap: redirect PC to mtvec, return to FETCH (skip WRITEBACK)
+                pc_reg        <= {mtvec_out[31:2], 2'b00};
+                fetch_req     <= 1'b1;
+                fetch_wait    <= 1'b0;
+                state         <= ST_FETCH;
+              end else begin
+                state <= ST_WRITEBACK;
+              end
+            end else if (!(mem_read_id || mem_write_id)) begin
+              // Non-memory instruction — pass through
               state <= ST_WRITEBACK;
             end
-          end else if (!(mem_read_id || mem_write_id)) begin
-            // Non-memory instruction — pass through
-            state <= ST_WRITEBACK;
           end
         end
 

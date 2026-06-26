@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-kv32 is a minimal RISC-V RV32GC soft core in SystemVerilog, targeting Linux boot on an FPGA. Multi-cycle state machine (FETCH/DECODE/EXEC/MEM/WRITEBACK) executing one instruction at a time. Phase 1 (RV32I base + M-mode CSRs) is complete.
+kv32 is a minimal RISC-V RV32IMAC soft core in SystemVerilog, targeting Linux boot on an FPGA. Multi-cycle state machine (FETCH/DECODE/EXEC/MEM/WRITEBACK) executing one instruction at a time. Phase 4 (RV32I + M extension + C extension + A extension) is complete.
 
 **Canonical spec**: SPEC.md is the single source of truth for architectural decisions. CLAUDE.md supplements it with agent-actionable guidance: where to look, what gotchas to avoid, how to debug. Implementation prose lives in [docs/](docs/index.md) so it can be maintained alongside the RTL.
 
@@ -37,6 +37,7 @@ A few cross-cutting gotchas worth flagging up front:
 - **`alu_op_valid` must be set for loads/stores** (ALU computes the effective address) or `ex_result` falls through to `pc_reg + 4`. See [docs/decoder.md](docs/decoder.md#alu_op_valid-gotcha).
 - **CSR write gating deliberately omits `!trap_taken`** to avoid a combinational loop through `csr_illegal → trap_taken`. See [docs/traps.md](docs/traps.md#csr-write-gating).
 - **Misaligned-access `non_crossing_ma` is only the `SH@addr[1:0]=01` case** — the load-side shift assumes this. See [docs/memory.md](docs/memory.md#misalignment-detection).
+- **LR/SC/AMO use multi-phase MEM state** — AMO reads, computes, then writes; SC checks reservation before storing. See [docs/memory.md](docs/memory.md#lrsc-and-amo-operations-a-extension).
 
 ## Debugging Tips
 

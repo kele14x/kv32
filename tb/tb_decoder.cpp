@@ -50,7 +50,7 @@ static uint32_t j_type(int32_t imm, uint8_t rd, uint8_t op) {
 // Opcodes
 enum { OpLui=0x37, OpAuipc=0x17, OpJal=0x6F, OpJalr=0x67, OpBranch=0x63,
        OpLoad=0x03, OpStore=0x23, OpImm=0x13, OpReg=0x33,
-       OpMiscMem=0x0F, OpSystem=0x73 };
+       OpMiscMem=0x0F, OpSystem=0x73, OpAmo=0x2F };
 
 // ALU op codes (from kv32_pkg)
 enum { AluAdd=0, AluSub=1, AluSll=2, AluSlt=3, AluSltu=4,
@@ -68,6 +68,7 @@ struct Exp {
     bool illegal=false, lui=false, auipc=false;
     uint8_t csr_op=0; bool csr_wen=false, is_csr=false, is_mret=false;
     bool use_zimm=false, is_ecall=false, is_ebreak=false;
+    bool is_lr=false, is_sc=false, is_amo=false;
 };
 
 // Pre-fill raw bit-extraction fields from the instruction word
@@ -101,6 +102,7 @@ static void check(Vkv32_decoder* d, const char* name, uint32_t instr, Exp e) {
     CMP(illegal); CMP(lui); CMP(auipc);
     CMP(csr_op); CMP(csr_wen); CMP(is_csr); CMP(is_mret);
     CMP(use_zimm); CMP(is_ecall); CMP(is_ebreak);
+    CMP(is_lr); CMP(is_sc); CMP(is_amo);
 #undef CMP
     if (failures != before)
         fprintf(stderr, "  (instr=0x%08X)\n", instr);
@@ -396,6 +398,84 @@ int main() {
 
     // FENCE.I (funct3=001) is a valid NOP in this pipeline.
     { Exp e = fields(0x0000100F); check(d, "FENCE.I valid NOP", 0x0000100F, e); }
+
+    // ---- A extension: LR.W, SC.W, AMO* ----
+    // AMO format: funct5[31:27] | aq[26] | rl[25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | rd[11:7] | opcode[6:0]
+    // Encoder: r(funct5 << 2 | aq << 1 | rl, rs2, rs1, f3, rd, op) but we use raw encoding
+
+    // LR.W: funct5=00010, aq=0, rl=0, rs2=00000, rs1=4, funct3=010, rd=5
+    { uint32_t i = (0b00010 << 27) | (0 << 26) | (0 << 25) | (0 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.reg_write=true; e.is_lr=true;
+      check(d, "LR.W", i, e); }
+
+    // SC.W: funct5=00011, aq=0, rl=0, rs2=3, rs1=4, funct3=010, rd=5
+    { uint32_t i = (0b00011 << 27) | (0 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      i |= (3 << 20);  // rs2
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_write=true; e.reg_write=true; e.is_sc=true;
+      check(d, "SC.W", i, e); }
+
+    // AMOSWAP.W: funct5=00001
+    { uint32_t i = (0b00001 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOSWAP.W", i, e); }
+
+    // AMOADD.W: funct5=00000
+    { uint32_t i = (0b00000 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOADD.W", i, e); }
+
+    // AMOAND.W: funct5=01100
+    { uint32_t i = (0b01100 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOAND.W", i, e); }
+
+    // AMOOR.W: funct5=01000
+    { uint32_t i = (0b01000 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOOR.W", i, e); }
+
+    // AMOXOR.W: funct5=00100
+    { uint32_t i = (0b00100 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOXOR.W", i, e); }
+
+    // AMOMAX.W: funct5=10100
+    { uint32_t i = (0b10100 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOMAX.W", i, e); }
+
+    // AMOMIN.W: funct5=10000
+    { uint32_t i = (0b10000 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOMIN.W", i, e); }
+
+    // AMOMAXU.W: funct5=11100
+    { uint32_t i = (0b11100 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOMAXU.W", i, e); }
+
+    // AMOMINU.W: funct5=11000
+    { uint32_t i = (0b11000 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOMINU.W", i, e); }
+
+    // AMO with .aq/.rl bits set (should still decode, these are NOPs in single-hart)
+    { uint32_t i = (0b00000 << 27) | (1 << 26) | (1 << 25) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.mem_read=true; e.mem_write=true; e.reg_write=true; e.is_amo=true;
+      check(d, "AMOADD.W with aq/rl", i, e); }
+
+    // Illegal AMO funct3 (not 010)
+    { uint32_t i = (0b00000 << 27) | (3 << 20) | (4 << 15) | (0 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.reg_write=true; e.illegal=true;
+      check(d, "illegal AMO funct3=000", i, e); }
+
+    // Illegal AMO funct5 (reserved)
+    { uint32_t i = (0b00010 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      // funct5=00010 is LR.W, but with rs2!=0 — actually LR.W ignores rs2, so this is valid
+      // Let me use a truly reserved funct5 like 00101
+      i = (0b00101 << 27) | (3 << 20) | (4 << 15) | (2 << 12) | (5 << 7) | OpAmo;
+      Exp e = fields(i); e.alu_op_valid=true; e.alu_op=AluAdd; e.use_imm=true; e.reg_write=true; e.illegal=true;
+      check(d, "illegal AMO funct5=00101", i, e); }
 
     delete d;
     printf("\n=== tb_decoder: %d tests, %d failures ===\n", tests, failures);

@@ -20,6 +20,7 @@ trap path see [traps.md](traps.md).
 | `0110011` | `OpReg`     | ADD/SUB/SLL/SLT/SLTU/XOR/SRL/SRA/OR/AND      |
 | `0001111` | `OpMiscMem` | FENCE/FENCE.I (NOPs)                         |
 | `1110011` | `OpSystem`  | CSRRW/S/C/I, ECALL, EBREAK, MRET             |
+| `0101111` | `OpAmo`     | LR.W, SC.W, AMO* (A extension)               |
 
 Any other opcode sets `illegal=1`.
 
@@ -96,6 +97,40 @@ All CSR instructions set `reg_write=1` so `rd` receives the old CSR value.
 
 These do not set `reg_write`; their effect is handled in the trap/MRET logic
 (see [traps.md](traps.md)).
+
+## A extension (atomic instructions)
+
+`OpAmo` in `kv32_decoder.sv`, keyed on `funct5` (bits 31:27):
+
+| funct5  | Instruction | `is_lr` | `is_sc` | `is_amo` | `mem_read` | `mem_write` |
+| ------- | ----------- | ------- | ------- | -------- | ---------- | ----------- |
+| `00010` | LR.W        | 1       | 0       | 0        | 1          | 0           |
+| `00011` | SC.W        | 0       | 1       | 0        | 0          | 1           |
+| `00001` | AMOSWAP.W   | 0       | 0       | 1        | 1          | 1           |
+| `00000` | AMOADD.W    | 0       | 0       | 1        | 1          | 1           |
+| `01100` | AMOAND.W    | 0       | 0       | 1        | 1          | 1           |
+| `01000` | AMOOR.W     | 0       | 0       | 1        | 1          | 1           |
+| `00100` | AMOXOR.W    | 0       | 0       | 1        | 1          | 1           |
+| `10100` | AMOMAX.W    | 0       | 0       | 1        | 1          | 1           |
+| `10000` | AMOMIN.W    | 0       | 0       | 1        | 1          | 1           |
+| `11100` | AMOMAXU.W   | 0       | 0       | 1        | 1          | 1           |
+| `11000` | AMOMINU.W   | 0       | 0       | 1        | 1          | 1           |
+
+All A-extension instructions require `funct3 = 010` (word width); any other
+`funct3` is illegal. The `.aq` and `.rl` bits (bits 26:25) are decoded but
+ignored in this single-hart implementation.
+
+All A-extension instructions set `alu_op_valid = 1` and `alu_op = AluAdd` to
+compute the effective address `rs1 + 0` (no offset). The `rs2` field holds the
+source register for SC.W and AMO operations.
+
+**Control signals**:
+
+- `is_lr`: load-reserved (sets reservation on success)
+- `is_sc`: store-conditional (checks reservation, writes 0/1 to `rd`)
+- `is_amo`: read-modify-write (multi-phase in MEM state)
+
+See [memory.md](memory.md#lrsc-and-amo-operations) for FSM integration details.
 
 ## FENCE / FENCE.I
 

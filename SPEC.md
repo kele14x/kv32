@@ -129,9 +129,50 @@ Both special cases are detected combinationally at M-unit entry and resolved wit
 - Quotient sign = `rs1_sign XOR rs2_sign`
 - Remainder sign = `rs1_sign`
 
+### 1.5 A Extension (Atomic Instructions)
+
+RV32A adds atomic memory operations for multiprocessor synchronization:
+
+| Instruction | funct5  | Type   | Description                                      |
+| ----------- | ------- | ------ | ------------------------------------------------ |
+| `LR.W`      | 00010   | Load   | Load-Reserved: `rd = [rs1]`, set reservation     |
+| `SC.W`      | 00011   | Store  | Store-Conditional: if reserved, `[rs1] = rs2`, `rd = 0`; else `rd = 1` |
+| `AMOSWAP.W` | 00001   | AMO    | `[rd] = rs2`, `[rs1] = rs2`                     |
+| `AMOADD.W`  | 00000   | AMO    | `rd = [rs1]`, `[rs1] = [rs1] + rs2`             |
+| `AMOAND.W`  | 01100   | AMO    | `rd = [rs1]`, `[rs1] = [rs1] & rs2`             |
+| `AMOOR.W`   | 01000   | AMO    | `rd = [rs1]`, `[rs1] = [rs1] \| rs2`            |
+| `AMOXOR.W`  | 00100   | AMO    | `rd = [rs1]`, `[rs1] = [rs1] ^ rs2`             |
+| `AMOMAX.W`  | 10100   | AMO    | `rd = [rs1]`, `[rs1] = smax([rs1], rs2)`        |
+| `AMOMIN.W`  | 10000   | AMO    | `rd = [rs1]`, `[rs1] = smin([rs1], rs2)`        |
+| `AMOMAXU.W` | 11100   | AMO    | `rd = [rs1]`, `[rs1] = umax([rs1], rs2)`        |
+| `AMOMINU.W` | 11000   | AMO    | `rd = [rs1]`, `[rs1] = umin([rs1], rs2)`        |
+
+**Architecture**: a dedicated AMO unit (`kv32_amo_unit`) performs the read-modify-write computation combinationally. LR/SC use a reservation register to track exclusive access.
+
+**Reservation register**:
+- Set by successful `LR.W`: stores `{valid=1, addr=rs1}`
+- Cleared by `SC.W` (success or failure) or by any non-SC store to the same address
+- Single-hart implementation: one reservation register per hart
+
+**FSM integration**:
+
+1. **Decode**: the decoder asserts `is_lr`, `is_sc`, or `is_amo` based on `funct5` (bits 31:27).
+2. **EXEC**: the ALU computes the effective address `rs1 + 0` (no offset for atomics).
+3. **MEM state**:
+   - **LR.W**: performs a normal load, sets reservation on success
+   - **SC.W**: checks reservation; if valid and address matches, performs store and writes `rd = 0`; else writes `rd = 1` (no memory access)
+   - **AMO**: multi-phase operation:
+     - Phase 1: read `old_val = [rs1]`
+     - Phase 2: compute `new_val = op(old_val, rs2)` using `kv32_amo_unit`
+     - Phase 3: write `[rs1] = new_val`
+4. **WRITEBACK**: writes result to `rd` (load value for LR, success/failure for SC, old value for AMO).
+
+**Address alignment**: all atomic instructions require word-aligned addresses (`addr[1:0] == 00`). Misaligned addresses trap with cause 4 (LR) or cause 6 (SC/AMO).
+
+**Memory ordering**: `.aq` and `.rl` bits (bits 26:25) are decoded but ignored in this single-hart implementation. A future multi-hart version would need to enforce acquire/release semantics via memory barriers.
+
 ---
 
-## 2. Privilege Modes
 
 Linux requires M, S, and U modes.
 

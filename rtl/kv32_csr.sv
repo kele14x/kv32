@@ -68,11 +68,11 @@ module kv32_csr
 
   // -------------------------------------------------------------------------
   // misa fixed value: MXL=01 (32-bit).
-  // Phase 3: I, M, and C extensions are implemented.
+  // Phase 4: I, M, C, and A extensions are implemented.
   // Extensions bitmap (bits [25:0]): A=0, C=2, D=3, F=5, I=8, M=12, S=18, U=20.
   // Update this value as each extension lands.
   // -------------------------------------------------------------------------
-  localparam logic [31:0] MisaVal = {2'b01, 4'b0000, 26'b00_0000_0001_0001_0000_0100};
+  localparam logic [31:0] MisaVal = {2'b01, 4'b0000, 26'b00_0000_0001_0001_0000_0101};
 
   // -------------------------------------------------------------------------
   // CSR storage registers
