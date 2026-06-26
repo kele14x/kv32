@@ -404,13 +404,12 @@ static int run_riscv_test(Vtb_core* top, VerilatedVcdC* tfp,
             uint32_t w0 = mem_read_word(top, 0x80002000);
             uint32_t w1 = mem_read_word(top, 0x80002004);
             auto r = top->rootp;
-            printf("  [%d] ma=%d we=%d dmem_addr=0x%08X dmem_be=0x%X dmem_wdata=0x%08X wd_mem=0x%08X B0=0x%08X B1=0x%08X\n",
+            printf("  [%d] ma=%d state=%d dmem_addr=0x%08X dmem_be=0x%X dmem_wdata=0x%08X B0=0x%08X B1=0x%08X\n",
                    i, r->tb_core__DOT__u_core__DOT__u_mem_fe__DOT__ma_state,
-                   r->tb_core__DOT__u_core__DOT__mem_write_mem,
+                   r->tb_core__DOT__u_core__DOT__state,
                    r->tb_core__DOT__dmem_addr,
                    r->tb_core__DOT__dmem_be,
                    r->tb_core__DOT__dmem_wdata,
-                   r->tb_core__DOT__u_core__DOT__mem_wdata_mem,
                    w0, w1);
         }
 

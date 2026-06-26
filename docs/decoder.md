@@ -2,7 +2,7 @@
 
 Combinational instruction decoder in `rtl/kv32_decoder.sv`. Takes a 32-bit
 instruction and produces decoded fields plus control signals for the rest of the
-pipeline. For CSR instruction behavior see [csr.md](csr.md); for the illegal
+core. For CSR instruction behavior see [csr.md](csr.md); for the illegal
 trap path see [traps.md](traps.md).
 
 ## Handled opcodes
@@ -42,7 +42,7 @@ In `kv32_decoder.sv`, selected by opcode:
 | `use_imm`                                    | ALU `b` input uses `imm` instead of `rs2`                  |
 | `alu_op_valid`                               | this instruction uses the ALU result (see below)           |
 | `alu_op`                                     | ALU op code (see `kv32_pkg.sv`)                            |
-| `mem_read` / `mem_write`                     | MEM stage performs a data access                           |
+| `mem_read` / `mem_write`                     | MEM state performs a data access                           |
 | `reg_write`                                  | writeback to `rd`                                          |
 | `branch` / `jump` / `is_jalr`                | branch / JAL-or-JALR / JALR                                |
 | `lui` / `auipc`                              | select `ex_result` source                                  |
@@ -61,11 +61,11 @@ ADD/SUB) `funct7` in `kv32_decoder.sv`. `SLLI`/`SRLI`/`SRAI` require
 `alu_op_valid` must be set for **any** instruction whose `ex_result` should come
 from the ALU — including loads and stores, which use the ALU to compute the
 effective address. Both `OpLoad` and `OpStore` set `alu_op_valid = 1'b1` in
-`kv32_decoder.sv`. Without this, `ex_result` falls through to the `pc_ex + 4`
+`kv32_decoder.sv`. Without this, `ex_result` falls through to the `pc_reg + 4`
 link-address branch in `kv32_core.sv` and the effective address is wrong. AUIPC
 also sets it in `kv32_core.sv`.
 
-LUI sets `lui=1` instead and `ex_result = imm_ex` in `kv32_core.sv`; it
+LUI sets `lui=1` instead and `ex_result = imm` in `kv32_core.sv`; it
 does not need `alu_op_valid`.
 
 ## CSR instructions
@@ -100,7 +100,7 @@ These do not set `reg_write`; their effect is handled in the trap/MRET logic
 ## FENCE / FENCE.I
 
 `OpMiscMem` in `kv32_decoder.sv`: `funct3=000` (FENCE) and `funct3=001`
-(FENCE.I) are treated as NOPs — correct for this in-order single-hart pipeline
+(FENCE.I) are treated as NOPs — correct for this in-order single-hart FSM
 with no separate I-cache against the unified BRAM in simulation. Any other
 `funct3` is illegal.
 
@@ -118,6 +118,6 @@ The decoder sets `illegal=1` for:
 - `OpSystem` with `funct3` other than the CSR/system set, or an unrecognized
   system immediate.
 
-`illegal` feeds the EX-stage trap detector (see [traps.md](traps.md)). CSR
+`illegal` feeds the EXEC-state trap detector (see [traps.md](traps.md)). CSR
 *access* legality (unimplemented/read-only) is checked separately in the CSR
 module via `csr_illegal` — see [csr.md](csr.md#legality-check-csr_illegal).

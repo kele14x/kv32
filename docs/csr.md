@@ -75,8 +75,8 @@ in `kv32_csr.sv`, so `rd` always gets the prior CSR contents. The new
 value is computed by `csr_new_val()` in `kv32_csr.sv`.
 
 `csr_wdata` is selected in `kv32_core.sv`: zimm-extended
-(`{27'b0, instr_ex[19:15]}`) for the immediate CSR variants, else the forwarded
-`rs1` value (`fwd_a`).
+(`{27'b0, instr_reg[19:15]}`) for the immediate CSR variants, else the
+`rs1` value (`rs1_data`).
 
 ## Write priority chain
 
@@ -91,7 +91,7 @@ Write priority chain in `kv32_csr.sv`, evaluated every clock:
    `csr_new_val`. Read-only and `mip` writes are ignored.
 
 Because trap and MRET already sit above the CSR-write case in this chain, the
-pipeline does **not** need to gate `csr_wen` on `!trap_taken` — see
+FSM does **not** need to gate `csr_wen` on `!trap_taken` — see
 [traps.md](traps.md#csr-write-gating) for why this matters (combinational-loop
 avoidance).
 
@@ -100,8 +100,8 @@ avoidance).
 `mcycle_r`/`minstret_r` are 64-bit in `kv32_csr.sv`.
 
 - `mcycle_r` increments every cycle.
-- `minstret_r` increments when `instr_retired` is high (a real, non-bubble
-  instruction is leaving WB and MEM is not stalled — see `kv32_core.sv`).
+- `minstret_r` increments when `instr_retired` is high (`state == ST_WRITEBACK`
+  and no trap pending — see `kv32_core.sv`).
 
 **Write-suppress guard** in `kv32_csr.sv`: when a CSR write targets
 `mcycle`/`mcycleh`/`minstret`/`minstreth` this cycle, the corresponding
@@ -109,9 +109,9 @@ free-running increment is suppressed. Without this, the 64-bit non-blocking
 increment and the 32-bit non-blocking CSR write would both fire on the same edge
 and the increment would clobber the written value.
 
-A trapping instruction is squashed in the EX/MEM register, so `instr_retired`
-is low that cycle and the trapping instruction does **not** count toward
-`minstret` — the RISC-V-preferred behavior.
+A trapping instruction never reaches the WRITEBACK state (trap redirects from
+EXEC or MEM), so `instr_retired` is low and the trapping instruction does
+**not** count toward `minstret` — the RISC-V-preferred behavior.
 
 ## Legality check (`csr_illegal`)
 
@@ -134,5 +134,5 @@ trap (mcause=2) — see [traps.md](traps.md).
 
 Only Direct mode is supported. On write, `mtvec_r[1:0]` is forced to `2'b00`
 in `kv32_csr.sv`. Vectored mode (MODE=1) is deferred until async
-interrupt-taking is added. The IF-stage redirect uses `{mtvec_out[31:2], 2'b00}`
+interrupt-taking is added. The FETCH-state redirect uses `{mtvec_out[31:2], 2'b00}`
 in `kv32_core.sv`.

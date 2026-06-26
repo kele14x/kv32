@@ -8,27 +8,27 @@
 
 ## 1. Architecture Overview
 
-### 1.1 Pipeline
+### 1.1 Execution Model
 
-Five-stage in-order pipeline:
+Multi-cycle state machine executing one instruction at a time:
 
 ```text
-IF → ID → EX → MEM → WB
+FETCH → DECODE → EXEC → MEM → WRITEBACK → FETCH → ...
 ```
 
-- Single issue, in-order
+- Single issue, in-order, one instruction completes before the next begins
 - No out-of-order, no superscalar, no speculative execution
-- Branch: resolve in EX, 2-cycle penalty on taken branch (or 1 with simple next-PC predictor)
-- Structural hazards: stall on data memory access conflicts; no dual-port register file needed
-- Forwarding: EX→EX and MEM→EX paths to avoid most data hazards
+- No forwarding, no hazard detection, no pipeline flush — only one instruction exists at a time
+- Branches/jumps resolve in EXEC with zero penalty (redirect PC and fetch next)
+- Multi-cycle operations (memory access, M-extension) hold the FSM in their respective state until complete
 
-**Rationale**: Single-cycle is too slow for acceptable Linux boot times. Deeper pipelines add hazard complexity without proportionate benefit at this scale.
+**Rationale**: Prioritizes simplicity and correctness over throughput. Adequate for Linux boot on FPGA. Dramatically simpler RTL than a pipelined design — no forwarding paths, no stall cascades, no pipeline flush logic. Easy to understand, debug, and extend.
 
 ### 1.2 Register File
 
 - 32 × 32-bit general-purpose registers (x0 hardwired to 0)
-- Single-read-port is acceptable with stalling; two read ports preferred for clean ID stage
-- Synchronous read, write on rising edge of WB stage
+- Two read ports, one write port
+- Combinational read, synchronous write on rising edge during WRITEBACK state
 
 ### 1.3 FPU (D extension)
 
@@ -56,33 +56,28 @@ RV32M adds 8 instructions in two groups, all sharing `funct7 = 7'b0000001`:
 | `REM`       | 110    | Div    | remainder       |
 | `REMU`      | 111    | Div    | remainder       |
 
-**Architecture**: a dedicated M-unit (`kv32_m_unit`) is instantiated alongside the ALU in the EX stage. Like the memory subsystem, the M-unit is multi-cycle and stalls the pipeline until completion via the existing `ex_stall` mechanism (§1.1).
+**Architecture**: a dedicated M-unit (`kv32_m_unit`) is instantiated alongside the ALU. The M-unit is multi-cycle and holds the FSM in the EXEC state until completion.
 
-**Pipeline integration**:
+**FSM integration**:
 
 1. **Decode**: the decoder asserts `is_m_mul` or `is_m_div` based on `funct7`/`funct3`.
-2. **EX entry**: when an M-extension instruction enters EX, the M-unit begins computation using the forwarded operands (`fwd_a`, `fwd_b`). `m_busy` is asserted, stalling the entire pipeline via `ex_stall`.
-3. **Completion**: after N cycles the M-unit asserts `m_done` and presents the result. On the next rising edge (with `m_busy` deasserted), the result is latched into the EX/MEM register through `ex_result`.
-4. **Forwarding**: once in MEM, the existing MEM→EX forwarding path delivers the result to any dependent instruction now entering EX. No new forwarding paths are needed.
-5. **Stall propagation**: `ex_stall` is extended:
-   ```text
-   ex_stall = mem_stall || m_busy
-   ```
-   Backpressure propagates upstream through `id_stall` and `if_stall` exactly as it does for memory stalls.
+2. **EXEC entry**: when an M-extension instruction reaches EXEC, the M-unit begins computation using the register file operands (`rs1_data`, `rs2_data`). `m_busy` is asserted, holding the FSM in EXEC.
+3. **Completion**: after N cycles the M-unit asserts `m_done` and presents the result. The FSM latches `m_result` and advances to MEM.
+4. **Result selection**: the `ex_result` mux selects `m_result` for M-extension instructions.
 
-**`ex_result` mux** priority (addition to existing mux):
+**`ex_result` mux** priority:
 
 ```text
 ex_result = is_m_op   ? m_result    :
-            is_csr_ex  ? csr_rdata   :
-            lui_ex     ? imm_ex      :
-            (alu_op_valid_ex || auipc_ex) ? alu_result :
-            pc_ex + 4;
+            is_csr     ? csr_rdata   :
+            lui        ? imm         :
+            (alu_op_valid || auipc) ? alu_result :
+            pc + 4;
 ```
 
-**Hazard handling**: the multi-cycle stall naturally resolves data hazards — a dependent instruction is held in ID for the entire duration of the M operation. By the time it enters EX, the M result is already in MEM and available through the existing MEM→EX forwarding path. No additional `load_use_hazard`-style detection is needed for M→ALU or M→M dependencies.
+**No hazard concerns**: only one instruction exists at a time. A dependent instruction fetches fresh operands from the register file after the M-unit result is written back.
 
-**Gating**: like other single-execution operations, M-unit activation is gated by `!ex_stall` (from other sources) and `!trap_taken` to prevent re-execution during a stall or on a squashed instruction.
+**Gating**: M-unit activation is gated by `state == ST_EXEC` to prevent spurious starts.
 
 ### 1.4.1 Multiplication semantics
 
@@ -236,7 +231,7 @@ adapter translates each port into a standard AXI4 master (§4.7).
 The data port is routed through `kv32_mem_fe` (`rtl/kv32_mem_fe.sv`), which owns
 all data-memory complexity: sub-word store positioning, byte-enable generation,
 load data extraction with sign/zero extension, and misaligned-access splitting
-(§4.3). The instruction port is a direct passthrough from the IF stage — the
+(§4.3). The instruction port is driven directly by the FETCH state — the
 core never issues a sub-word or misaligned fetch (§7.2: instruction-address
 misaligned traps cause 0).
 
@@ -351,12 +346,15 @@ raised for misaligned jumps, since `imem_*` never performs a split fetch.
 
 The core uses **two independent memory ports** (Harvard-style):
 
-- **Instruction port** (`imem_*`): driven directly by the IF stage, read-only.
-  The IF side presents one request at a time and buffers returned instructions so
-  fetch responses can arrive while the pipeline is stalled.
-- **Data port** (`dmem_*`): driven by the MEM stage through `kv32_mem_fe`
+- **Instruction port** (`imem_*`): driven directly by the FETCH state, read-only.
+  The FSM issues one request at a time and waits for the response before
+  advancing to DECODE.
+- **Data port** (`dmem_*`): driven by the MEM state through `kv32_mem_fe`
   (§4.3). `dmem_req` is asserted until each beat is granted; completion is
   reported later with `dmem_ack`.
+
+Because the FSM executes one instruction at a time, only one port is active at
+any given moment — the instruction port during FETCH, the data port during MEM.
 
 There is no internal arbiter. The two ports may be backed by a single memory
 (with an external crossbar that arbitrates between them) or by two independent
@@ -753,8 +751,8 @@ Implemented registers:
 
 ## 14. Implementation Order
 
-1. **Phase 1 — RV32I base**: IF/ID/EX/MEM/WB datapath, register file, ALU, branch, load/store, CSR file (M-mode only), dual `imem_*`/`dmem_*` memory ports with `kv32_mem_fe` handling sub-word and misaligned data access (§4). Run `riscv-tests` M-mode binaries.
-2. **Phase 2 — M extension** (`kv32_m_unit`): multiplier (FPGA DSP-inferred, 2–3 cycles) and iterative divider (radix-2, 32–33 cycles). Integrates via existing `ex_stall` mechanism — no new forwarding paths or pipeline stages needed (§1.4). Verify with `rv32mi` tests.
+1. **Phase 1 — RV32I base**: Multi-cycle FSM datapath (FETCH/DECODE/EXEC/MEM/WRITEBACK states), register file, ALU, branch, load/store, CSR file (M-mode only), dual `imem_*`/`dmem_*` memory ports with `kv32_mem_fe` handling sub-word and misaligned data access (§4). Run `riscv-tests` M-mode binaries.
+2. **Phase 2 — M extension** (`kv32_m_unit`): multiplier (FPGA DSP-inferred, 2–3 cycles) and iterative divider (radix-2, 32–33 cycles). Integrates by holding the FSM in EXEC state while `m_busy` — no new states or forwarding paths needed (§1.4). Verify with `rv32mi` tests.
 3. **Phase 3 — C extension**: instruction decompressor (16-bit → 32-bit) at IF output. Verify with `rv32uc`.
 4. **Phase 4 — A extension**: LR/SC with reservation register; AMO operations. `rv32ua` tests.
 5. **Phase 5 — Privilege**: M/S/U modes, trap delegation, `mret`/`sret`, `mideleg`/`medeleg`. Boot a minimal S-mode payload.

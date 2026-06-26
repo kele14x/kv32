@@ -2,7 +2,7 @@
 
 Implementation of the memory interface, sub-word access, and misaligned-access
 handling. The memory front-end lives in `rtl/kv32_mem_fe.sv`; the core's
-pipeline and dual-port wiring are in `rtl/kv32_core.sv`. For the architectural
+FSM and dual-port wiring are in `rtl/kv32_core.sv`. For the architectural
 memory interface contract (signal list, alignment invariant, AXI adapter plan),
 see [SPEC.md §4](../SPEC.md).
 
@@ -10,11 +10,12 @@ see [SPEC.md §4](../SPEC.md).
 
 The core exposes two independent memory interfaces using a **req/gnt/ack** protocol:
 
-- **imem_\*** — instruction fetch (IF stage), read-only, direct passthrough.
-- **dmem_\*** — data load/store (MEM stage), routed through `kv32_mem_fe`.
+- **imem_\*** — instruction fetch (FETCH state), read-only, direct from FSM.
+- **dmem_\*** — data load/store (MEM state), routed through `kv32_mem_fe`.
 
-There is no internal arbiter. At SoC integration time, an external crossbar or
-interconnect fabric arbitrates between the two ports.
+Because the FSM executes one instruction at a time, only one port is active at
+any given moment. There is no internal arbiter. At SoC integration time, an
+external crossbar or interconnect fabric arbitrates between the two ports.
 
 ### req/gnt/ack protocol
 
@@ -29,28 +30,30 @@ Zero-latency slaves may assert `req && gnt && ack` in the same cycle.
 
 ### i-port (instruction fetch)
 
-The IF stage wires directly to `imem_*` (`kv32_core.sv`):
+The FETCH state drives `imem_*` directly (`kv32_core.sv`):
 
 ```systemverilog
-assign imem_req   = i_req;       // from IF stage
-assign imem_addr  = i_addr;      // = pc_if
+assign imem_req   = (state == ST_FETCH) && !fetch_wait;
+assign imem_addr  = pc_reg;
 assign imem_we    = 1'b0;        // read-only
 assign imem_size  = 2'b10;       // always word
 assign imem_wdata = 32'h0;
 assign imem_be    = 4'hF;
 assign imem_excl  = 1'b0;
-assign i_valid    = i_buf_valid;
-assign i_rdata    = i_buf_instr;
 ```
+
+On `imem_ack`, the instruction word is latched into `instr_reg` and the FSM
+advances to DECODE.
 
 ### d-port (data load/store)
 
 The d-port goes through `kv32_mem_fe`, which handles alignment, sub-word
-positioning, and load extraction.
+positioning, and load extraction. The FSM drives `dmem_req` only during the MEM
+state, gated by `state == ST_MEM && (mem_read || mem_write)`.
 
 ## kv32_mem_fe (`rtl/kv32_mem_fe.sv`)
 
-The memory front-end sits between the core's MEM stage and the external dmem
+The memory front-end sits between the core's MEM state and the external dmem
 bus. It takes a raw memory request (address, size, unpositioned write data,
 funct3) and produces correctly aligned, positioned, and byte-enabled bus
 transactions. For loads, it returns the extracted and sign/zero-extended value.
@@ -122,7 +125,7 @@ Four functional blocks:
 
 ### Sub-word stores
 
-The core passes raw `fwd_b` (unpositioned rs2) to the mem_fe. The mem_fe
+The core passes raw `rs2_data` (unpositioned rs2) to the mem_fe. The mem_fe
 computes byte enables and data positioning:
 
 | `size`   | Insn   | BE / wdata                                                       |

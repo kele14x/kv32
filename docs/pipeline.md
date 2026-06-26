@@ -1,34 +1,87 @@
-# Pipeline
+# Execution Model
 
-Implementation details of the 5-stage in-order pipeline. For the architectural
-specification (rationale, privilege modes, MMU), see [SPEC.md §1](../SPEC.md).
-For trap/flush interaction see [traps.md](traps.md); for memory access see
-[memory.md](memory.md).
+Implementation details of the multi-cycle FSM that executes one instruction at a
+time. For the architectural specification (rationale, privilege modes, MMU), see
+[SPEC.md §1](../SPEC.md). For trap handling see [traps.md](traps.md); for memory
+access see [memory.md](memory.md).
 
 ```text
-IF -> ID -> EX -> MEM -> WB
+FETCH → DECODE → EXEC → MEM → WRITEBACK → FETCH → ...
 ```
 
-Single issue, in-order, no speculation. Branches resolve in EX (2-cycle penalty
-on taken branch). All pipeline registers live in `rtl/kv32_core.sv`.
+Single issue, in-order. One instruction completes (or traps) before the next
+begins. No forwarding, no hazard detection, no pipeline flush.
 
-## Stage responsibilities
+## State responsibilities
 
-| Stage   | Role                                              | Key signals                                               |
-| ------- | ------------------------------------------------- | --------------------------------------------------------- |
-| IF      | PC management, instruction fetch via i-port       | `pc_if`, `i_req`, `i_addr`                                |
-| ID      | Decode (`kv32_decoder`), read source registers    | `instr_id`, `rs1_id`/`rs2_id`, decode control outputs     |
-| EX      | ALU, branch compare, CSR read, trap detect        | `alu_result`, `ex_result`, `branch_taken`, `trap_taken`   |
-| MEM     | Data memory access via d-port, sub-word extract   | `mem_result`, `d_req`, `d_valid`                          |
-| WB      | Register writeback                                | `regfile_we`, `regfile_rd`, `regfile_wdata`               |
+| State      | Role                                                  | Key signals                                  |
+| ---------- | ----------------------------------------------------- | -------------------------------------------- |
+| FETCH      | Drive `imem_req` with `pc_reg`, wait for `imem_ack`   | `pc_reg`, `imem_req`, `imem_ack`             |
+| DECODE     | Combinational decode (`kv32_decoder`), regfile read   | `instr_reg`, decode control outputs           |
+| EXEC       | ALU, branch compare, CSR read/write, trap detect, M-unit | `alu_result`, `ex_result`, `branch_taken`, `trap_taken` |
+| MEM        | Data memory access via `dmem_*` through `kv32_mem_fe` | `dmem_req`, `fe_rdata_valid`, `fe_rdata`      |
+| WRITEBACK  | Register writeback, `minstret` increment, PC += 4     | `regfile_we`, `regfile_rd`, `regfile_wdata`   |
 
-## Instruction-valid tracking
+All state transitions are in `rtl/kv32_core.sv`.
 
-A separate `instr_valid_*` chain in `kv32_core.sv` distinguishes real
-instructions from bubbles (flushed slots, load-use bubbles, reset state). This
-is what lets `minstret` count retired instructions correctly rather than
-counting every slot that reaches WB. A bubble has `instr_valid_*=0` and cleared
-write/control signals, so it neither writes the register file nor retires.
+## FSM state enum
+
+```systemverilog
+typedef enum logic [2:0] {
+  ST_FETCH,
+  ST_DECODE,
+  ST_EXEC,
+  ST_MEM,
+  ST_WRITEBACK
+} state_t;
+```
+
+## Per-state behavior
+
+### FETCH
+
+Drive `imem_req` with `pc_reg`. Wait for the `imem_ack` handshake (may be
+zero-latency or multi-cycle depending on the memory slave). On `imem_ack`, latch
+`imem_rdata` into `instr_reg` and advance to DECODE.
+
+### DECODE
+
+The decoder (`kv32_decoder`) is combinational — it produces all control signals
+and the immediate from `instr_reg` in the same cycle. The register file
+(`kv32_regfile`) is also combinational-read, so `rs1_data` and `rs2_data` are
+available immediately. This state advances to EXEC in one cycle.
+
+### EXEC
+
+Compute the result of the instruction:
+
+- **ALU ops**: `alu_result` from `kv32_alu` using `rs1_data`/`rs2_data`.
+- **AUIPC**: ALU with `pc_reg` as operand A.
+- **LUI**: result = `imm`.
+- **CSR**: result = `csr_rdata`; CSR write gated by `state == ST_EXEC`.
+- **M-extension**: start `kv32_m_unit`, hold in EXEC while `m_busy`, latch
+  `m_result` on `m_done`.
+- **Branch/jump**: evaluate condition, compute target.
+- **Trap**: detect illegal/ecall/ebreak, set `trap_taken`.
+
+On branch taken or trap: redirect `pc_reg` to the target (or `mtvec` for traps)
+and return to FETCH. Otherwise: latch `ex_result` and advance to MEM.
+
+### MEM
+
+For loads and stores: drive `dmem_req` through `kv32_mem_fe`, wait for
+`fe_rdata_valid`. For all other instructions: pass through in one cycle.
+
+On completion: advance to WRITEBACK.
+
+### WRITEBACK
+
+Write result to register file (if `reg_write` is set for this instruction).
+Increment `minstret` via `instr_retired`. Advance `pc_reg` by 4. Return to
+FETCH.
+
+If an access fault was detected in MEM (`fe_err && fe_rdata_valid`), the FSM
+redirects to `mtvec` instead of advancing PC — see [traps.md](traps.md).
 
 ## Register file design
 
@@ -37,88 +90,40 @@ synchronous write. `x0` is hardwired to 0 in the read-port mux; the write port
 also gates on `rd_addr != 0`. The array is **intentionally not reset** (saves
 FPGA/ASIC resources; software initializes registers before use).
 
-**Reads are taken from `rs1_ex`/`rs2_ex` (EX stage), not `rs1_id`/`rs2_id`**
-in `kv32_core.sv`. This is critical for forwarding: the forwarding logic
-compares against the instruction currently in EX, so the regfile must read the
-operands for that same instruction. Reading in ID would desync the operands from
-the forwarding comparisons.
+Read ports are addressed by the decoded `rs1`/`rs2` fields from `instr_reg`.
+Since reads are combinational and the FSM holds the instruction stable through
+EXEC, operands are available without latching.
 
-## Forwarding
+## Result selection
 
-Forwarding logic in `kv32_core.sv`. Two paths, both feed the EX stage:
-
-- **MEM→EX (highest priority)**: forwards `mem_result` when
-  `reg_write_mem && rd_mem != 0`.
-- **WB→EX (lower priority)**: forwards `wb_data` when
-  `reg_write_wb && rd_wb != 0`, but only if MEM isn't already forwarding to the
-  same register (the `!(reg_write_mem && rd_mem == rsN_ex)` guard).
-
-`fwd_a`/`fwd_b` default to the regfile read values and are used by the ALU input
-mux, the branch comparator, and the sub-word store data positioning (so a
-forwarded `rs2` becomes the stored value — see [memory.md](memory.md)).
-
-ALU input mux in `kv32_core.sv`:
+The `ex_result` mux in `kv32_core.sv` selects the writeback value:
 
 ```systemverilog
-assign alu_a = auipc_ex ? pc_ex : fwd_a;
-assign alu_b = use_imm_ex ? imm_ex : fwd_b;
+ex_result = is_csr       ? csr_rdata   :
+            lui          ? imm         :
+            is_m_op      ? m_result    :
+            (alu_op_valid || auipc) ? alu_result :
+            pc_reg + 4;
 ```
 
-`ex_result` mux in `kv32_core.sv` selects CSR read data → LUI immediate
-→ ALU result (`alu_op_valid_ex || auipc_ex`) → `pc_ex + 4` (JAL/JALR link).
-
-## Hazard detection and stalls
-
-**Load-use hazard** in `kv32_core.sv`:
-
-```systemverilog
-assign load_use_hazard = mem_read_ex && rd_ex != 5'h0 &&
-                        ((rd_ex == rs1_id) || (rd_ex == rs2_id));
-```
-
-When detected, the ID/EX register inserts a bubble (control signals cleared,
-`rd_ex <= 0`, `instr_valid_ex <= 0`).
-
-**Stall/backpressure network** in `kv32_core.sv`:
-
-```systemverilog
-assign if_wait   = i_req && !i_valid;
-assign mem_stall = (mem_read_mem || mem_write_mem) && !d_valid;
-assign ex_stall  = mem_stall;
-assign id_stall  = load_use_hazard || mem_stall || if_wait;
-assign if_stall  = if_wait || load_use_hazard || mem_stall;
-```
-
-- `mem_stall`: MEM stalls until `d_valid` (not just `d_gnt`).
-- `ex_stall`: backpressure from MEM freezes the ID/EX register.
-- `if_wait`: IF has a fetch request or response in flight with no buffered
-  instruction available yet; inserts a bubble in EX to prevent double-execution
-  once the instruction arrives.
-- All pipeline registers use the `if (!stall)` pattern to hold values during
-  stalls.
+For loads, the writeback data is `fe_rdata` (from `kv32_mem_fe`) instead of
+`ex_result`.
 
 ## Branch and jump resolution
 
-Resolved combinationally in EX in `kv32_core.sv`. `branch_taken` and
-`branch_target` are computed from `fwd_a`/`fwd_b` (forwarded operands):
+Resolved combinationally in EXEC. `branch_taken` and `branch_target` are
+computed from `rs1_data`/`rs2_data`:
 
 - `MRET`: target = `mepc_out`.
-- Branches (`funct3_ex`): BEQ/BNE/BLT/BGE/BLTU/BGEU; target = `pc_ex + imm_ex`.
-- JAL: target = `pc_ex + imm_ex`.
-- JALR: target = `(fwd_a + imm_ex) & ~1`.
+- Branches (`funct3`): BEQ/BNE/BLT/BGE/BLTU/BGEU; target = `pc_reg + imm`.
+- JAL: target = `pc_reg + imm`.
+- JALR: target = `(rs1_data + imm) & ~1`.
 
-A taken branch flushes IF and ID (2-cycle penalty). The flush signals are shared
-with trap handling — see [traps.md](traps.md) for the combined flush logic.
+A taken branch or jump redirects `pc_reg` and returns to FETCH. No flush is
+needed — only one instruction exists at a time.
 
-## Pipeline register summary
+## `instr_retired` and `minstret`
 
-| Register         | Reset / flush behavior                                                                                             |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
-| IF (PC, i_req)   | reset → `pc_if=0`, `i_req=1`; trap → `mtvec`; flush → `branch_target`; stall → hold                                |
-| IF/ID            | reset/flush → NOP (`0x13`), `instr_valid_id=0`; stall → hold                                                       |
-| ID/EX            | reset → all zero; `ex_stall` → freeze; `ex_flush` → bubble; load_use/if_wait → bubble; else latch decoded fields   |
-| EX/MEM           | reset → all zero; `trap_taken` → bubble (squash faulting insn); `!mem_stall` → latch + compute store BE/wdata      |
-| MEM/WB           | reset → all zero; `!mem_stall` → latch `mem_result`                                                                |
-
-The EX/MEM register also performs store data positioning and byte-enable
-generation for sub-word stores (see [memory.md](memory.md#sub-word-stores)).
+`instr_retired = (state == ST_WRITEBACK) && !trap_pending`. A trapping
+instruction never reaches WRITEBACK (trap redirects from EXEC or MEM), so
+trapping instructions do not count toward `minstret`.
