@@ -529,9 +529,9 @@ Interrupt taken when:
 | 5     | Load access fault              | Faulting address          |
 | 6     | Store/AMO address misaligned   | Faulting address          |
 | 7     | Store/AMO access fault         | Faulting address          |
-| 8     | Environment call from U        | PC                        |
-| 9     | Environment call from S        | PC                        |
-| 11    | Environment call from M        | PC                        |
+| 8     | Environment call from U        | 0                         |
+| 9     | Environment call from S        | 0                         |
+| 11    | Environment call from M        | 0                         |
 | 12    | Instruction page fault         | Faulting virtual address  |
 | 13    | Load page fault                | Faulting virtual address  |
 | 15    | Store/AMO page fault           | Faulting virtual address  |

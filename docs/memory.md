@@ -33,7 +33,7 @@ Zero-latency slaves may assert `req && gnt && ack` in the same cycle.
 The FETCH state drives `imem_*` directly (`kv32_core.sv`):
 
 ```systemverilog
-assign imem_req   = (state == ST_FETCH) && !fetch_wait;
+assign imem_req   = (state == ST_FETCH) && fetch_req && !fetch_wait;
 assign imem_addr  = pc_reg;
 assign imem_we    = 1'b0;        // read-only
 assign imem_size  = 2'b10;       // always word

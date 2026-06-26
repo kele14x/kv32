@@ -300,10 +300,10 @@ static void test_crossing_sh11_load(Vkv32_mem_fe* d) {
     tick(d);
     d->dmem_ack = 0; d->dmem_gnt = 0;
 
-    // MA_BETWEEN
+    // MA_SECOND_REQ
     tick(d);
 
-    // MA_SECOND
+    // MA_SECOND_WAIT
     d->dmem_rdata = 0xAABBCCDD;  // second word
     d->dmem_ack = 1; d->dmem_gnt = 1;
     d->eval();
@@ -531,7 +531,7 @@ static void test_back_to_back(Vkv32_mem_fe* d) {
     d->eval();
     tick(d);  // → MA_FIRST
     d->dmem_ack = 1; d->dmem_gnt = 1; d->eval(); tick(d);
-    d->dmem_ack = 0; d->dmem_gnt = 0; tick(d);  // → MA_BETWEEN → MA_SECOND
+    d->dmem_ack = 0; d->dmem_gnt = 0; tick(d);  // → MA_SECOND_REQ
     d->dmem_ack = 1; d->dmem_gnt = 1; d->eval();
     check_eq("b2b crossing store rdata_valid", d->rdata_valid, 1);
     tick(d);
@@ -621,8 +621,8 @@ static void test_err_second_beat(Vkv32_mem_fe* d) {
     tick(d);
     d->dmem_ack = 0; d->dmem_gnt = 0;
 
-    // MA_BETWEEN
-    tick(d);  // → MA_SECOND
+    // MA_SECOND_REQ
+    tick(d);  // → MA_SECOND_WAIT
 
     // MA_SECOND: err
     d->dmem_rdata = 0xAABBCCDD;

@@ -142,11 +142,12 @@ module kv32_csr
       csr_illegal = 1'b0;  // not a CSR instruction
     end else begin
       unique case (csr_addr)
-        CsrMstatus, CsrMisa, CsrMie, CsrMtvec, CsrMcounteren, CsrMstatush,
+        CsrMstatus, CsrMie, CsrMtvec, CsrMcounteren,
                 CsrMscratch, CsrMepc, CsrMcause, CsrMtval, CsrMip,
                 CsrMcycle, CsrMcycleh, CsrMinstret, CsrMinstreth:
         csr_illegal = 1'b0;  // implemented, read-write
-        CsrMvendorid, CsrMarchid, CsrMimpid, CsrMhartid, CsrMconfigptr:
+        CsrMisa, CsrMstatush,
+                CsrMvendorid, CsrMarchid, CsrMimpid, CsrMhartid, CsrMconfigptr:
         csr_illegal = csr_wen;  // read-only: write is illegal
         default: csr_illegal = 1'b1;  // unimplemented: any access illegal
       endcase
