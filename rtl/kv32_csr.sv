@@ -55,6 +55,11 @@ module kv32_csr
     output logic        mstatus_tvm,      // Trap satp access from S-mode
     output logic [ 1:0] mstatus_mpp_out,  // M-mode previous privilege
     output logic        mstatus_spp_out,  // S-mode previous privilege
+    output logic        mstatus_sum_o,    // Supervisor user memory access (Phase 6)
+    output logic        mstatus_mxr_o,    // Make executable readable (Phase 6)
+    output logic        satp_mode,        // satp translation mode (Phase 6)
+    output logic [ 8:0] satp_asid,        // satp address space ID (Phase 6)
+    output logic [21:0] satp_ppn,         // satp root page table PPN (Phase 6)
     output logic        csr_illegal,      // CSR access is illegal (raises trap)
 
     // Interrupt pending interface
@@ -639,5 +644,10 @@ module kv32_csr
   assign mstatus_tvm     = mstatus_tvm_r;
   assign mstatus_mpp_out = mstatus_mpp;
   assign mstatus_spp_out = mstatus_spp;
+  assign mstatus_sum_o   = mstatus_sum;
+  assign mstatus_mxr_o   = mstatus_mxr;
+  assign satp_mode       = satp_r[31];
+  assign satp_asid       = satp_r[30:22];
+  assign satp_ppn        = satp_r[21:0];
 
 endmodule

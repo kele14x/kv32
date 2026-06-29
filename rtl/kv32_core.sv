@@ -43,7 +43,8 @@ module kv32_core
     ST_DECODE,
     ST_EXEC,
     ST_MEM,
-    ST_WRITEBACK
+    ST_WRITEBACK,
+    ST_PTW  // Page table walk (Phase 6)
   } state_t;
 
   state_t            state;
@@ -71,6 +72,15 @@ module kv32_core
   // Current privilege mode (Phase 5: M/S/U support)
   priv_mode_t        priv_mode;
 
+  // MMU signals (Phase 6: Sv32 virtual memory)
+  logic              mmu_bypass;  // Translation bypass (bare mode or M-mode)
+  logic              i_translated;  // Instruction translation ready
+  logic              d_translated;  // Data translation ready
+  logic              ptw_source;  // 0=from fetch, 1=from data (for return after PTW)
+  logic              sfence_vma_pulse;  // sfence.vma pulse to MMU (registered)
+  logic       [19:0] mmu_sfence_va;  // Virtual address for sfence (registered)
+  logic       [ 8:0] mmu_sfence_asid;  // ASID for sfence (registered)
+
   // ===========================================================================
   // C extension: instruction alignment and decompression
   // ===========================================================================
@@ -91,7 +101,13 @@ module kv32_core
 
   // Word-align the fetch address
   logic       [31:0] fetch_addr;
+  logic       [31:0] fetch_phys_addr;
   assign fetch_addr = fetch_second ? {pc_reg[31:2] + 30'd1, 2'b00} : {pc_reg[31:2], 2'b00};
+  // Phase 6: translate instruction address (use physical PPN from MMU or pass-through)
+  // Note: Sv32 produces 34-bit physical addresses (22-bit PPN + 12-bit offset).
+  // We use only PPN[19:0] since our memory interface is 32-bit. If PPN[21:20] != 0,
+  // the access would be above 4GB and should fault (TODO: add access fault check).
+  assign fetch_phys_addr = mmu_i_tlb_hit ? {mmu_i_phys_ppn[19:0], pc_reg[11:0]} : fetch_addr;
 
   // ===========================================================================
   // Instruction memory interface (driven during FETCH state)
@@ -101,14 +117,15 @@ module kv32_core
   logic i_err;
   // verilator lint_on UNUSEDSIGNAL
 
-  assign imem_req   = (state == ST_FETCH) && fetch_req && !fetch_wait;
-  assign imem_addr  = fetch_addr;
-  assign imem_we    = 1'b0;
-  assign imem_size  = 2'b10;  // always word
+  // Phase 6: gate fetch on translation readiness and no page fault
+  assign imem_req   = (state == ST_FETCH) && fetch_req && !fetch_wait && i_translated && !mmu_i_page_fault;
+  assign imem_addr = fetch_phys_addr;
+  assign imem_we = 1'b0;
+  assign imem_size = 2'b10;  // always word
   assign imem_wdata = 32'h0;
-  assign imem_be    = 4'hF;
-  assign imem_excl  = 1'b0;
-  assign i_err      = imem_err;
+  assign imem_be = 4'hF;
+  assign imem_excl = 1'b0;
+  assign i_err = imem_err;
 
   // ===========================================================================
   // Memory front-end
@@ -127,6 +144,15 @@ module kv32_core
   logic        fe_rdata_valid;
   logic        fe_err;
 
+  // Phase 6: internal signals from kv32_mem_fe (before PTW bus mux)
+  logic        fe_dmem_req;
+  logic [31:0] fe_dmem_addr;
+  logic        fe_dmem_we;
+  logic [ 1:0] fe_dmem_size;
+  logic [31:0] fe_dmem_wdata;
+  logic [ 3:0] fe_dmem_be;
+  logic        fe_dmem_excl;
+
   // Data memory front-end: handles alignment, sub-word positioning,
   // load extraction, and misaligned access splitting.
   kv32_mem_fe u_mem_fe (
@@ -142,18 +168,27 @@ module kv32_core
       .rdata      (fe_rdata),
       .rdata_valid(fe_rdata_valid),
       .err        (fe_err),
-      .dmem_req   (dmem_req),
-      .dmem_addr  (dmem_addr),
-      .dmem_we    (dmem_we),
-      .dmem_size  (dmem_size),
-      .dmem_wdata (dmem_wdata),
-      .dmem_be    (dmem_be),
-      .dmem_excl  (dmem_excl),
+      .dmem_req   (fe_dmem_req),
+      .dmem_addr  (fe_dmem_addr),
+      .dmem_we    (fe_dmem_we),
+      .dmem_size  (fe_dmem_size),
+      .dmem_wdata (fe_dmem_wdata),
+      .dmem_be    (fe_dmem_be),
+      .dmem_excl  (fe_dmem_excl),
       .dmem_gnt   (dmem_gnt),
       .dmem_ack   (dmem_ack),
       .dmem_rdata (dmem_rdata),
       .dmem_err   (dmem_err)
   );
+
+  // Phase 6: bus mux — PTW drives dmem directly when in ST_PTW state
+  assign dmem_req   = (state == ST_PTW) ? mmu_ptw_req : fe_dmem_req;
+  assign dmem_addr  = (state == ST_PTW) ? mmu_ptw_addr : fe_dmem_addr;
+  assign dmem_we    = (state == ST_PTW) ? mmu_ptw_we : fe_dmem_we;
+  assign dmem_size  = (state == ST_PTW) ? 2'b10 : fe_dmem_size;  // PTW: always word
+  assign dmem_wdata = (state == ST_PTW) ? mmu_ptw_wdata : fe_dmem_wdata;
+  assign dmem_be    = (state == ST_PTW) ? 4'hF : fe_dmem_be;  // PTW: always full word
+  assign dmem_excl  = (state == ST_PTW) ? 1'b0 : fe_dmem_excl;
 
   // ===========================================================================
   // Decompressor (C extension — expands 16-bit instructions to 32-bit)
@@ -438,6 +473,12 @@ module kv32_core
   logic        mstatus_sie;
   logic [ 1:0] mstatus_mpp;
   logic        mstatus_spp;
+  logic        mstatus_mprv;  // Phase 6: MMU uses for data access privilege
+  logic        mstatus_sum;  // Phase 6: S-mode can access U-pages (data only)
+  logic        mstatus_mxr;  // Phase 6: Make executable pages readable
+  logic        satp_mode;  // Phase 6: Translation mode (0=Bare, 1=Sv32)
+  logic [ 8:0] satp_asid;  // Phase 6: Address space identifier
+  logic [21:0] satp_ppn;  // Phase 6: Root page table PPN
   logic [31:0] sepc_out;  // Used in Stage 5 for SRET
   logic        irq_pending;  // Interrupt pending from CSR module
   logic [31:0] irq_cause;  // Cause value for pending interrupt
@@ -539,6 +580,18 @@ module kv32_core
         trap_taken = 1'b1;
         trap_cause = mem_write_id ? 32'd7 : 32'd5;  // Store / Load access fault
         trap_val   = ex_result_reg;  // Faulting address
+      end  // Phase 6: data page fault (from MMU TLB lookup)
+      else if (!mmu_bypass && mmu_d_page_fault) begin
+        trap_taken = 1'b1;
+        trap_cause = mem_write_id ? EXC_STORE_PAGE_FAULT : EXC_LOAD_PAGE_FAULT;
+        trap_val   = ex_result_reg;  // Faulting virtual address
+      end
+    end else if (state == ST_FETCH) begin
+      // Phase 6: instruction page fault (from MMU TLB lookup)
+      if (!mmu_bypass && mmu_i_page_fault) begin
+        trap_taken = 1'b1;
+        trap_cause = EXC_INSTR_PAGE_FAULT;
+        trap_val   = pc_reg;  // Faulting virtual PC
       end
     end
   end
@@ -628,7 +681,10 @@ module kv32_core
         if (priv_mode == PRIV_S && mstatus_tvm) begin
           // Illegal instruction trap (handled in trap detection)
         end else begin
-          // NOP (no TLB in this implementation)
+          // Phase 6: invalidate TLB entries via MMU
+          // rs1 = virtual address (x0 = all addresses)
+          // rs2 = ASID (x0 = all ASIDs)
+          // Pulse is registered in the always_ff block
         end
       end else if (branch_id) begin
         unique case (funct3_id)
@@ -684,19 +740,31 @@ module kv32_core
   // Exclusive access hint for LR/SC (not for AMO — those are regular bus ops)
   assign d_excl = is_lr_id || is_sc_id;
 
+  // Phase 6: translated data address (use physical PPN from MMU or pass-through)
+  // Note: Sv32 produces 34-bit physical addresses. We use only PPN[19:0] since
+  // our memory interface is 32-bit. Accesses above 4GB should fault.
+  logic [31:0] d_addr_translated;
+  assign d_addr_translated = mmu_d_tlb_hit
+                           ? {mmu_d_phys_ppn[19:0], ex_result_reg[11:0]}
+                           : ex_result_reg;
+
+  // Phase 6: gate data access on translation readiness and no page fault
+  logic d_access_ok;
+  assign d_access_ok = d_translated && !mmu_d_page_fault;
+
   always_comb begin
     if (state == ST_MEM) begin
-      d_addr = ex_result_reg;  // Effective address from EXEC
-      d_size = 2'b10;  // LR/SC/AMO are always word (.W)
+      d_addr = d_addr_translated;  // Phase 6: use translated address
+      d_size = funct3_id[1:0];  // LB/LH/LW/LBU/LHU or SB/SH/SW
 
       if (is_lr_id) begin
         // LR.W: simple load, reservation set on success
-        d_req   = 1'b1;
+        d_req   = d_access_ok;
         d_we    = 1'b0;
         d_wdata = 32'h0;
       end else if (is_sc_id) begin
-        // SC.W: conditional store (only if reservation valid & address matches)
-        d_req   = reservation_valid && (reservation_addr == ex_result_reg);
+        // SC.W: conditional store (only if reservation valid & address matches & translation ok)
+        d_req   = d_access_ok && reservation_valid && (reservation_addr == ex_result_reg);
         d_we    = 1'b1;
         d_wdata = rs2_data_reg;
       end else if (is_amo_id) begin
@@ -704,13 +772,13 @@ module kv32_core
         unique case (amo_state)
           AMO_IDLE, AMO_READ_WAIT: begin
             // Read phase: load old value
-            d_req   = 1'b1;
+            d_req   = d_access_ok;
             d_we    = 1'b0;
             d_wdata = 32'h0;
           end
           AMO_WRITE_ISSUE, AMO_WRITE_WAIT: begin
             // Write phase: store computed result
-            d_req   = 1'b1;
+            d_req   = d_access_ok;
             d_we    = 1'b1;
             d_wdata = amo_result;
           end
@@ -722,7 +790,7 @@ module kv32_core
         endcase
       end else begin
         // Normal load/store
-        d_req   = mem_read_id || mem_write_id;
+        d_req   = d_access_ok && (mem_read_id || mem_write_id);
         d_we    = mem_write_id;
         d_wdata = rs2_data_reg;
         d_size  = funct3_id[1:0];
@@ -797,12 +865,17 @@ module kv32_core
       .mideleg_out    (mideleg_out),
       .mstatus_mie    (mstatus_mie),
       .mstatus_sie_o  (mstatus_sie),
-      .mstatus_mprv   (),                // Phase 6: MMU will use
+      .mstatus_mprv   (mstatus_mprv),
       .mstatus_tsr    (mstatus_tsr),
       .mstatus_tw     (mstatus_tw),
       .mstatus_tvm    (mstatus_tvm),
       .mstatus_mpp_out(mstatus_mpp),
       .mstatus_spp_out(mstatus_spp),
+      .mstatus_sum_o  (mstatus_sum),
+      .mstatus_mxr_o  (mstatus_mxr),
+      .satp_mode      (satp_mode),
+      .satp_asid      (satp_asid),
+      .satp_ppn       (satp_ppn),
       .csr_illegal    (csr_illegal),
       .irq_pending    (irq_pending),
       .irq_cause      (irq_cause),
@@ -811,28 +884,118 @@ module kv32_core
   /* verilator lint_on PINCONNECTEMPTY */
 
   // ===========================================================================
+  // MMU (Phase 6: Sv32 virtual memory)
+  // ===========================================================================
+
+  // MMU internal signals
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic [21:0] mmu_i_phys_ppn;  // [21:20] unused: 32-bit memory truncates high bits
+  logic        mmu_i_tlb_hit;
+  logic        mmu_i_page_fault;
+  logic [21:0] mmu_d_phys_ppn;  // [21:20] unused: 32-bit memory truncates high bits
+  logic        mmu_d_tlb_hit;
+  logic        mmu_d_page_fault;
+  logic        mmu_ptw_start;
+  logic [19:0] mmu_walk_vpn;
+  logic [ 1:0] mmu_walk_access_type;
+  logic        mmu_ptw_req;
+  logic [31:0] mmu_ptw_addr;
+  logic        mmu_ptw_we;
+  logic [31:0] mmu_ptw_wdata;
+  logic        mmu_ptw_gnt;
+  logic        mmu_ptw_ack;
+  logic [31:0] mmu_ptw_rdata;
+  logic        mmu_ptw_err;
+  logic        mmu_ptw_busy;  // unused: PTW state tracked via ptw_done/ptw_fault
+  logic        mmu_ptw_done;
+  logic        mmu_ptw_fault;
+  logic [31:0] mmu_ptw_fault_cause;  // unused: trap cause from trap detection logic
+  /* verilator lint_on UNUSEDSIGNAL */
+
+  // Translation bypass: bare mode or M-mode (unless MPRV with MPP != M for data)
+  always_comb begin
+    // For instruction fetch: bypass if bare mode or M-mode
+    mmu_bypass = !satp_mode || (priv_mode == PRIV_M);
+  end
+
+  // Translation ready signals
+  assign i_translated = mmu_bypass || mmu_i_tlb_hit;
+  assign d_translated = mmu_bypass || mmu_d_tlb_hit;
+
+  kv32_mmu u_mmu (
+      .clk             (clk),
+      .rst_n           (rst_n),
+      .satp_asid       (satp_asid),
+      .satp_ppn        (satp_ppn),
+      .mstatus_sum     (mstatus_sum),
+      .mstatus_mxr     (mstatus_mxr),
+      .mstatus_mprv    (mstatus_mprv),
+      .mstatus_mpp     (mstatus_mpp),
+      .priv_mode       (priv_mode),
+      .i_vpn           (pc_reg[31:12]),
+      .i_phys_ppn      (mmu_i_phys_ppn),
+      .i_tlb_hit       (mmu_i_tlb_hit),
+      .i_page_fault    (mmu_i_page_fault),
+      .d_vpn           (ex_result_reg[31:12]),
+      .d_phys_ppn      (mmu_d_phys_ppn),
+      .d_tlb_hit       (mmu_d_tlb_hit),
+      .d_page_fault    (mmu_d_page_fault),
+      .ptw_start       (mmu_ptw_start),
+      .walk_vpn        (mmu_walk_vpn),
+      .walk_access_type(mmu_walk_access_type),
+      .sfence_vma      (sfence_vma_pulse),
+      .sfence_va       (mmu_sfence_va),
+      .sfence_asid     (mmu_sfence_asid),
+      .ptw_req         (mmu_ptw_req),
+      .ptw_addr        (mmu_ptw_addr),
+      .ptw_we          (mmu_ptw_we),
+      .ptw_wdata       (mmu_ptw_wdata),
+      .ptw_gnt         (mmu_ptw_gnt),
+      .ptw_ack         (mmu_ptw_ack),
+      .ptw_rdata       (mmu_ptw_rdata),
+      .ptw_err         (mmu_ptw_err),
+      .ptw_busy        (mmu_ptw_busy),
+      .ptw_done        (mmu_ptw_done),
+      .ptw_fault       (mmu_ptw_fault),
+      .ptw_fault_cause (mmu_ptw_fault_cause)
+  );
+
+  // PTW bus routing: PTW uses dmem bus when in ST_PTW state
+  assign mmu_ptw_gnt   = (state == ST_PTW) ? dmem_gnt : 1'b0;
+  assign mmu_ptw_ack   = (state == ST_PTW) ? dmem_ack : 1'b0;
+  assign mmu_ptw_rdata = dmem_rdata;
+  assign mmu_ptw_err   = dmem_err;
+
+  // ===========================================================================
   // Main FSM
   // ===========================================================================
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      state             <= ST_FETCH;
-      pc_reg            <= 32'h0;
-      instr_reg         <= 32'h0;
-      fetch_req         <= 1'b1;
-      fetch_wait        <= 1'b0;
-      fetch_second      <= 1'b0;
-      instr_half        <= 16'h0;
-      is_compressed_reg <= 1'b0;
-      ex_result_reg     <= 32'h0;
-      rs2_data_reg      <= 32'h0;
-      load_data_reg     <= 32'h0;
-      branch_target_reg <= 32'h0;
-      branch_redirect   <= 1'b0;
-      trap_from_mem     <= 1'b0;
-      priv_mode         <= PRIV_M;  // Boot in M-mode
+      state                <= ST_FETCH;
+      pc_reg               <= 32'h0;
+      instr_reg            <= 32'h0;
+      fetch_req            <= 1'b1;
+      fetch_wait           <= 1'b0;
+      fetch_second         <= 1'b0;
+      instr_half           <= 16'h0;
+      is_compressed_reg    <= 1'b0;
+      ex_result_reg        <= 32'h0;
+      rs2_data_reg         <= 32'h0;
+      load_data_reg        <= 32'h0;
+      branch_target_reg    <= 32'h0;
+      branch_redirect      <= 1'b0;
+      trap_from_mem        <= 1'b0;
+      priv_mode            <= PRIV_M;  // Boot in M-mode
+      ptw_source           <= 1'b0;
+      mmu_ptw_start        <= 1'b0;
+      mmu_walk_vpn         <= 20'b0;
+      mmu_walk_access_type <= 2'b0;
+      sfence_vma_pulse     <= 1'b0;
     end else begin
       trap_from_mem <= 1'b0;  // Default: clear each cycle
+      mmu_ptw_start <= 1'b0;  // PTW start is a pulse
+      sfence_vma_pulse <= 1'b0;  // sfence.vma is a pulse
 
       unique case (state)
         ST_FETCH: begin
@@ -845,6 +1008,22 @@ module kv32_core
             fetch_req  <= 1'b1;
             fetch_wait <= 1'b0;
             // Stay in ST_FETCH to begin fetching from trap vector
+          end else if (!mmu_bypass && mmu_i_page_fault) begin
+            // Phase 6: Instruction page fault — take trap immediately
+            // (trap detection logic will set trap_cause = 12)
+            trap_from_mem <= 1'b1;
+            pc_reg        <= trap_vector_pc;
+            priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
+            fetch_req     <= 1'b1;
+            fetch_wait    <= 1'b0;
+            state         <= ST_FETCH;
+          end else if (!mmu_bypass && !mmu_i_tlb_hit && !fetch_req && !fetch_wait) begin
+            // Phase 6: Instruction TLB miss — start page table walk
+            ptw_source <= 1'b0;  // Came from fetch
+            mmu_ptw_start <= 1'b1;
+            mmu_walk_vpn <= pc_reg[31:12];
+            mmu_walk_access_type <= 2'd0;  // EXEC (instruction fetch)
+            state <= ST_PTW;
           end else begin
             // Normal fetch: handle imem handshake
             if (fetch_req && imem_gnt && !imem_ack) begin
@@ -913,6 +1092,13 @@ module kv32_core
             fetch_req  <= 1'b1;
             fetch_wait <= 1'b0;
             state      <= ST_FETCH;
+          end else if (is_sfence_vma_id) begin
+            // sfence.vma: invalidate TLB entries
+            // Pulse the sfence signal for one cycle
+            sfence_vma_pulse <= 1'b1;
+            mmu_sfence_va    <= rs1_data[31:12];
+            mmu_sfence_asid  <= rs2_data[8:0];
+            state <= ST_WRITEBACK;  // Advance to writeback (no memory access)
           end else if (branch_taken) begin
             // Branch/jump/MRET/SRET: latch target and result, go to MEM (pass-through)
             // then WRITEBACK to write link register if needed
@@ -939,7 +1125,23 @@ module kv32_core
         end
 
         ST_MEM: begin
-          if (is_amo_id) begin
+          // Phase 6: Check for data page fault or TLB miss
+          if (!mmu_bypass && mmu_d_page_fault) begin
+            // Data page fault — take trap immediately
+            trap_from_mem <= 1'b1;
+            pc_reg        <= trap_vector_pc;
+            priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
+            fetch_req     <= 1'b1;
+            fetch_wait    <= 1'b0;
+            state         <= ST_FETCH;
+          end else if (!mmu_bypass && !mmu_d_tlb_hit && (mem_read_id || mem_write_id)) begin
+            // Data TLB miss — start page table walk
+            ptw_source <= 1'b1;  // Came from data access
+            mmu_ptw_start <= 1'b1;
+            mmu_walk_vpn <= ex_result_reg[31:12];
+            mmu_walk_access_type <= mem_write_id ? 2'd2 : 2'd1;  // STORE or LOAD
+            state <= ST_PTW;
+          end else if (is_amo_id) begin
             // AMO: multi-phase read-modify-write
             unique case (amo_state)
               AMO_READ_WAIT: begin
@@ -1032,6 +1234,32 @@ module kv32_core
           fetch_req  <= 1'b1;
           fetch_wait <= 1'b0;
           state      <= ST_FETCH;
+        end
+
+        // Phase 6: Page table walk state
+        ST_PTW: begin
+          // PTW is in progress (mmu_ptw_busy)
+          // On completion, return to the original state (FETCH or MEM)
+          if (mmu_ptw_done) begin
+            // TLB filled, retry the original access
+            if (ptw_source) begin
+              // Came from ST_MEM — retry data access
+              state <= ST_MEM;
+            end else begin
+              // Came from ST_FETCH — retry instruction fetch
+              fetch_req <= 1'b1;
+              state     <= ST_FETCH;
+            end
+          end else if (mmu_ptw_fault) begin
+            // Page fault: take trap
+            trap_from_mem <= 1'b1;
+            pc_reg        <= trap_vector_pc;
+            priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
+            fetch_req     <= 1'b1;
+            fetch_wait    <= 1'b0;
+            state         <= ST_FETCH;
+          end
+          // Otherwise stay in ST_PTW (PTW in progress)
         end
 
         default: begin

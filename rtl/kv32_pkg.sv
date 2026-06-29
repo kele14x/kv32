@@ -64,6 +64,11 @@ package kv32_pkg;
   localparam logic [11:0] CsrCycleh = 12'hC80;
   localparam logic [11:0] CsrInstret = 12'hC02;
   localparam logic [11:0] CsrInstreth = 12'hC82;
+
+  // Exception cause codes (Phase 6: page faults)
+  localparam logic [31:0] EXC_INSTR_PAGE_FAULT = 32'd12;
+  localparam logic [31:0] EXC_LOAD_PAGE_FAULT = 32'd13;
+  localparam logic [31:0] EXC_STORE_PAGE_FAULT = 32'd15;
   /* verilator lint_on UNUSEDPARAM */
 
 endpackage

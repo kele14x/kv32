@@ -70,6 +70,7 @@ RTL_SOURCES = \
     $(RTL_DIR)/kv32_amo_unit.sv \
     $(RTL_DIR)/kv32_regfile.sv \
     $(RTL_DIR)/kv32_csr.sv \
+    $(RTL_DIR)/kv32_mmu.sv \
     $(RTL_DIR)/kv32_decompressor.sv \
     $(RTL_DIR)/kv32_decoder.sv \
     $(RTL_DIR)/kv32_mem_fe.sv \
