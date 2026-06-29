@@ -109,33 +109,33 @@ module kv32_decoder
 
   // Control signals and ALU operation
   always_comb begin
-    use_imm      = 1'b0;
-    alu_op_valid = 1'b0;
-    alu_op       = 4'h0;
-    mem_read     = 1'b0;
-    mem_write    = 1'b0;
-    reg_write    = 1'b0;
-    branch       = 1'b0;
-    jump         = 1'b0;
-    is_jalr      = 1'b0;
-    illegal      = 1'b0;
-    lui          = 1'b0;
-    auipc        = 1'b0;
-    csr_op       = CSR_OP_NONE;
-    csr_wen      = 1'b0;
-    is_csr       = 1'b0;
-    is_mret      = 1'b0;
-    is_sret      = 1'b0;
-    is_wfi       = 1'b0;
+    use_imm       = 1'b0;
+    alu_op_valid  = 1'b0;
+    alu_op        = 4'h0;
+    mem_read      = 1'b0;
+    mem_write     = 1'b0;
+    reg_write     = 1'b0;
+    branch        = 1'b0;
+    jump          = 1'b0;
+    is_jalr       = 1'b0;
+    illegal       = 1'b0;
+    lui           = 1'b0;
+    auipc         = 1'b0;
+    csr_op        = CSR_OP_NONE;
+    csr_wen       = 1'b0;
+    is_csr        = 1'b0;
+    is_mret       = 1'b0;
+    is_sret       = 1'b0;
+    is_wfi        = 1'b0;
     is_sfence_vma = 1'b0;
-    use_zimm     = 1'b0;
-    is_ecall     = 1'b0;
-    is_ebreak    = 1'b0;
-    is_m_mul     = 1'b0;
-    is_m_div     = 1'b0;
-    is_lr        = 1'b0;
-    is_sc        = 1'b0;
-    is_amo       = 1'b0;
+    use_zimm      = 1'b0;
+    is_ecall      = 1'b0;
+    is_ebreak     = 1'b0;
+    is_m_mul      = 1'b0;
+    is_m_div      = 1'b0;
+    is_lr         = 1'b0;
+    is_sc         = 1'b0;
+    is_amo        = 1'b0;
 
     unique case (opcode)
       OpLui: begin
@@ -381,41 +381,29 @@ module kv32_decoder
             // Most require rd and rs1 to be x0, but SFENCE.VMA uses rs1/rs2
             unique case (instr[31:20])
               12'h000: begin  // ECALL
-                if (rd != 5'h0 || rs1 != 5'h0)
-                  illegal = 1'b1;
-                else
-                  is_ecall = 1'b1;
+                if (rd != 5'h0 || rs1 != 5'h0) illegal = 1'b1;
+                else is_ecall = 1'b1;
               end
               12'h001: begin  // EBREAK
-                if (rd != 5'h0 || rs1 != 5'h0)
-                  illegal = 1'b1;
-                else
-                  is_ebreak = 1'b1;
+                if (rd != 5'h0 || rs1 != 5'h0) illegal = 1'b1;
+                else is_ebreak = 1'b1;
               end
               12'h302: begin  // MRET
-                if (rd != 5'h0 || rs1 != 5'h0)
-                  illegal = 1'b1;
-                else
-                  is_mret = 1'b1;
+                if (rd != 5'h0 || rs1 != 5'h0) illegal = 1'b1;
+                else is_mret = 1'b1;
               end
               12'h102: begin  // SRET
-                if (rd != 5'h0 || rs1 != 5'h0)
-                  illegal = 1'b1;
-                else
-                  is_sret = 1'b1;
+                if (rd != 5'h0 || rs1 != 5'h0) illegal = 1'b1;
+                else is_sret = 1'b1;
               end
               12'h105: begin  // WFI
-                if (rd != 5'h0 || rs1 != 5'h0)
-                  illegal = 1'b1;
-                else
-                  is_wfi = 1'b1;
+                if (rd != 5'h0 || rs1 != 5'h0) illegal = 1'b1;
+                else is_wfi = 1'b1;
               end
               default: begin
                 // SFENCE.VMA: funct7=0001001, rd/rs1/rs2 can be non-zero
-                if (instr[31:25] == 7'b0001001)
-                  is_sfence_vma = 1'b1;
-                else
-                  illegal = 1'b1;
+                if (instr[31:25] == 7'b0001001) is_sfence_vma = 1'b1;
+                else illegal = 1'b1;
               end
             endcase
           end

@@ -46,13 +46,16 @@ help:
 	@echo "    test-all               Run all built-in integration tests"
 	@echo "                           Override MEM/IMEM/DMEM_LATENCY or *_RANDOM_LATENCY=1"
 	@echo ""
-	@echo "  Unit Tests (per-module, isolated testbenches):"
-	@echo "    unit-tests             Run all 5 unit tests"
+	@echo "  Unit Tests (per-module, isolated SystemVerilog testbenches):"
+	@echo "    unit-tests             Run all 8 unit tests"
 	@echo "    unit-test-alu          ALU: 10 ops, edge cases"
 	@echo "    unit-test-regfile      Regfile: x0, write-during-read, dual-port"
 	@echo "    unit-test-decoder      Decoder: opcodes, immediates, CSR variants"
-	@echo "    unit-test-csr          CSR: read/write, trap, MRET, counters"
+	@echo "    unit-test-decompressor Decompressor: all RV32C instruction formats"
+	@echo "    unit-test-csr          CSR: read/write, trap, MRET/SRET, counters, privilege"
 	@echo "    unit-test-mem_fe       Memory front-end: alignment, sub-word, FSM"
+	@echo "    unit-test-m_unit       M-unit: MUL/MULH/DIV/REM"
+	@echo "    unit-test-amo_unit     AMO unit: all 9 atomic operations"
 	@echo ""
 	@echo "  riscv-tests (requires RISC-V toolchain):"
 	@echo "    riscv-tests            Auto-checkout, compile, and run all rv32ui tests"
@@ -257,61 +260,61 @@ riscv-tests: verilator-build riscv-tests-compile
 
 UNIT_TESTS = alu regfile decoder decompressor csr mem_fe m_unit amo_unit
 
-unit-test-alu: $(TB_DIR)/tb_alu.cpp $(RTL_DIR)/kv32_alu.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_alu \
-		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_alu.sv $(TB_DIR)/tb_alu.cpp \
+unit-test-alu: $(TB_DIR)/tb_alu.sv $(RTL_DIR)/kv32_alu.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_alu \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_alu.sv $(TB_DIR)/tb_alu.sv \
 		--Mdir build/obj_dir_alu
-	./build/obj_dir_alu/Vkv32_alu
+	./build/obj_dir_alu/Vtb_alu
 
-unit-test-regfile: $(TB_DIR)/tb_regfile.cpp $(RTL_DIR)/kv32_regfile.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_regfile \
-		$(RTL_DIR)/kv32_regfile.sv $(TB_DIR)/tb_regfile.cpp \
+unit-test-regfile: $(TB_DIR)/tb_regfile.sv $(RTL_DIR)/kv32_regfile.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_regfile \
+		$(RTL_DIR)/kv32_regfile.sv $(TB_DIR)/tb_regfile.sv \
 		--Mdir build/obj_dir_regfile
-	./build/obj_dir_regfile/Vkv32_regfile
+	./build/obj_dir_regfile/Vtb_regfile
 
-unit-test-decoder: $(TB_DIR)/tb_decoder.cpp $(RTL_DIR)/kv32_decoder.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_decoder \
-		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_decoder.sv $(TB_DIR)/tb_decoder.cpp \
+unit-test-decoder: $(TB_DIR)/tb_decoder.sv $(RTL_DIR)/kv32_decoder.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_decoder \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_decoder.sv $(TB_DIR)/tb_decoder.sv \
 		--Mdir build/obj_dir_decoder
-	./build/obj_dir_decoder/Vkv32_decoder
+	./build/obj_dir_decoder/Vtb_decoder
 
-unit-test-decompressor: $(TB_DIR)/tb_decompressor.cpp $(RTL_DIR)/kv32_decompressor.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_decompressor \
-		$(RTL_DIR)/kv32_decompressor.sv $(TB_DIR)/tb_decompressor.cpp \
+unit-test-decompressor: $(TB_DIR)/tb_decompressor.sv $(RTL_DIR)/kv32_decompressor.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_decompressor \
+		$(RTL_DIR)/kv32_decompressor.sv $(TB_DIR)/tb_decompressor.sv \
 		--Mdir build/obj_dir_decompressor
-	./build/obj_dir_decompressor/Vkv32_decompressor
+	./build/obj_dir_decompressor/Vtb_decompressor
 
-unit-test-csr: $(TB_DIR)/tb_csr.cpp $(RTL_DIR)/kv32_csr.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_csr \
-		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_csr.sv $(TB_DIR)/tb_csr.cpp \
+unit-test-csr: $(TB_DIR)/tb_csr.sv $(RTL_DIR)/kv32_csr.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_csr \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_csr.sv $(TB_DIR)/tb_csr.sv \
 		--Mdir build/obj_dir_csr
-	./build/obj_dir_csr/Vkv32_csr
+	./build/obj_dir_csr/Vtb_csr
 
-unit-test-mem_fe: $(TB_DIR)/tb_mem_fe.cpp $(RTL_DIR)/kv32_mem_fe.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_mem_fe \
-		$(RTL_DIR)/kv32_mem_fe.sv $(TB_DIR)/tb_mem_fe.cpp \
+unit-test-mem_fe: $(TB_DIR)/tb_mem_fe.sv $(RTL_DIR)/kv32_mem_fe.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_mem_fe \
+		$(RTL_DIR)/kv32_mem_fe.sv $(TB_DIR)/tb_mem_fe.sv \
 		--Mdir build/obj_dir_mem_fe
-	./build/obj_dir_mem_fe/Vkv32_mem_fe
+	./build/obj_dir_mem_fe/Vtb_mem_fe
 
-unit-test-m_unit: $(TB_DIR)/tb_m_unit.cpp $(RTL_DIR)/kv32_m_unit.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_m_unit \
-		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_m_unit.sv $(TB_DIR)/tb_m_unit.cpp \
+unit-test-m_unit: $(TB_DIR)/tb_m_unit.sv $(RTL_DIR)/kv32_m_unit.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_m_unit \
+		$(RTL_DIR)/kv32_pkg.sv $(RTL_DIR)/kv32_m_unit.sv $(TB_DIR)/tb_m_unit.sv \
 		--Mdir build/obj_dir_m_unit
-	./build/obj_dir_m_unit/Vkv32_m_unit
+	./build/obj_dir_m_unit/Vtb_m_unit
 
-unit-test-amo_unit: $(TB_DIR)/tb_amo_unit.cpp $(RTL_DIR)/kv32_amo_unit.sv | build
-	verilator --cc --exe --build -j 1 -Wall -Wno-fatal \
-		--top-module kv32_amo_unit \
-		$(RTL_DIR)/kv32_amo_unit.sv $(TB_DIR)/tb_amo_unit.cpp \
+unit-test-amo_unit: $(TB_DIR)/tb_amo_unit.sv $(RTL_DIR)/kv32_amo_unit.sv | build
+	verilator --binary --timing --build -j 1 -Wall -Wno-fatal \
+		--top-module tb_amo_unit \
+		$(RTL_DIR)/kv32_amo_unit.sv $(TB_DIR)/tb_amo_unit.sv \
 		--Mdir build/obj_dir_amo_unit
-	./build/obj_dir_amo_unit/Vkv32_amo_unit
+	./build/obj_dir_amo_unit/Vtb_amo_unit
 
 unit-tests: $(addprefix unit-test-,$(UNIT_TESTS))
 	@echo ""
@@ -380,7 +383,8 @@ build:
 
 .PHONY: help verilator verilator-build test-alu test-subword test-all test-latency \
         riscv-tests-compile riscv-test-% riscv-tests riscv-tests-latency \
-        unit-test-alu unit-test-regfile unit-test-decoder unit-test-csr unit-test-mem_fe unit-test-amo_unit \
+        unit-test-alu unit-test-regfile unit-test-decoder unit-test-decompressor \
+        unit-test-csr unit-test-mem_fe unit-test-m_unit unit-test-amo_unit \
         unit-tests lint format format-check clean \
         clean-integration clean-unit clean-riscv-tests
 

@@ -28,38 +28,38 @@ module kv32_csr
     input logic irq_software,  // MSIP
 
     // Trap interface (from pipeline)
-    input logic        trap_taken,  // A trap is being taken this cycle
+    input logic        trap_taken,    // A trap is being taken this cycle
     /* verilator lint_off UNUSEDSIGNAL */
-    input logic [31:0] trap_pc,     // PC of trapping instruction (bit0 always 0)
+    input logic [31:0] trap_pc,       // PC of trapping instruction (bit0 always 0)
     /* verilator lint_on UNUSEDSIGNAL */
-    input logic [31:0] trap_cause,  // mcause/scause value
-    input logic [31:0] trap_val,    // mtval/stval value
-    input logic        trap_to_smode,  // Trap routed to S-mode handler
+    input logic [31:0] trap_cause,    // mcause/scause value
+    input logic [31:0] trap_val,      // mtval/stval value
+    input logic        trap_to_smode, // Trap routed to S-mode handler
 
     // MRET/SRET interface
     input logic mret_taken,  // MRET executing
     input logic sret_taken,  // SRET executing
 
     // Outputs to pipeline
-    output logic [31:0] mtvec_out,       // M-mode trap vector
-    output logic [31:0] mepc_out,        // M-mode return address
-    output logic [31:0] stvec_out,       // S-mode trap vector
-    output logic [31:0] sepc_out,        // S-mode return address
-    output logic [31:0] medeleg_out,     // Exception delegation bitmap
-    output logic [31:0] mideleg_out,     // Interrupt delegation bitmap
-    output logic        mstatus_mie,     // M-mode global interrupt enable
-    output logic        mstatus_sie_o,   // S-mode global interrupt enable
-    output logic        mstatus_mprv,    // Modify privilege (data access)
-    output logic        mstatus_tsr,     // Trap SRET from S-mode
-    output logic        mstatus_tw,      // Timeout WFI from S/U-mode
-    output logic        mstatus_tvm,     // Trap satp access from S-mode
-    output logic [ 1:0] mstatus_mpp_out, // M-mode previous privilege
-    output logic        mstatus_spp_out, // S-mode previous privilege
-    output logic        csr_illegal,     // CSR access is illegal (raises trap)
+    output logic [31:0] mtvec_out,        // M-mode trap vector
+    output logic [31:0] mepc_out,         // M-mode return address
+    output logic [31:0] stvec_out,        // S-mode trap vector
+    output logic [31:0] sepc_out,         // S-mode return address
+    output logic [31:0] medeleg_out,      // Exception delegation bitmap
+    output logic [31:0] mideleg_out,      // Interrupt delegation bitmap
+    output logic        mstatus_mie,      // M-mode global interrupt enable
+    output logic        mstatus_sie_o,    // S-mode global interrupt enable
+    output logic        mstatus_mprv,     // Modify privilege (data access)
+    output logic        mstatus_tsr,      // Trap SRET from S-mode
+    output logic        mstatus_tw,       // Timeout WFI from S/U-mode
+    output logic        mstatus_tvm,      // Trap satp access from S-mode
+    output logic [ 1:0] mstatus_mpp_out,  // M-mode previous privilege
+    output logic        mstatus_spp_out,  // S-mode previous privilege
+    output logic        csr_illegal,      // CSR access is illegal (raises trap)
 
     // Interrupt pending interface
-    output logic        irq_pending,     // An interrupt is pending and enabled
-    output logic [31:0] irq_cause,       // Cause value for pending interrupt
+    output logic        irq_pending,  // An interrupt is pending and enabled
+    output logic [31:0] irq_cause,    // Cause value for pending interrupt
 
     // Retired instruction signal
     input logic instr_retired
@@ -108,17 +108,17 @@ module kv32_csr
   // -------------------------------------------------------------------------
 
   // mstatus fields (all stored as individual bits for field-level masking)
-  logic        mstatus_sie;    // [1]  S-mode interrupt enable
+  logic        mstatus_sie;  // [1]  S-mode interrupt enable
   // mstatus_mie is already declared as output port [3]
-  logic        mstatus_spie;   // [5]  S-mode previous interrupt enable
-  logic        mstatus_mpie;   // [7]  M-mode previous interrupt enable
-  logic        mstatus_spp;    // [8]  S-mode previous privilege (1 bit)
-  logic [ 1:0] mstatus_mpp;    // [12:11] M-mode previous privilege
-  logic        mstatus_mprv_r; // [17] modify privilege (data access mode)
-  logic        mstatus_sum;    // [18] supervisor user memory access
-  logic        mstatus_mxr;    // [19] make executable readable
+  logic        mstatus_spie;  // [5]  S-mode previous interrupt enable
+  logic        mstatus_mpie;  // [7]  M-mode previous interrupt enable
+  logic        mstatus_spp;  // [8]  S-mode previous privilege (1 bit)
+  logic [ 1:0] mstatus_mpp;  // [12:11] M-mode previous privilege
+  logic        mstatus_mprv_r;  // [17] modify privilege (data access mode)
+  logic        mstatus_sum;  // [18] supervisor user memory access
+  logic        mstatus_mxr;  // [19] make executable readable
   logic        mstatus_tvm_r;  // [20] trap virtual memory (satp/SFENCE.VMA)
-  logic        mstatus_tw_r;   // [21] timeout WFI
+  logic        mstatus_tw_r;  // [21] timeout WFI
   logic        mstatus_tsr_r;  // [22] trap SRET from S-mode
 
   // M-mode trap CSRs
@@ -161,44 +161,44 @@ module kv32_csr
 
   // mstatus: all implemented fields
   assign mstatus_rval = {
-    9'b0,           // [31:23]
+    9'b0,  // [31:23]
     mstatus_tsr_r,  // [22]
-    mstatus_tw_r,   // [21]
+    mstatus_tw_r,  // [21]
     mstatus_tvm_r,  // [20]
-    mstatus_mxr,    // [19]
-    mstatus_sum,    // [18]
-    mstatus_mprv_r, // [17]
-    4'b0,           // [16:13] (XS, FS — not implemented)
-    mstatus_mpp,    // [12:11]
-    2'b0,           // [10:9]
-    mstatus_spp,    // [8]
-    mstatus_mpie,   // [7]
-    1'b0,           // [6]
-    mstatus_spie,   // [5]
-    1'b0,           // [4]
-    mstatus_mie,    // [3]
-    1'b0,           // [2]
-    mstatus_sie,    // [1]
-    1'b0            // [0]
+    mstatus_mxr,  // [19]
+    mstatus_sum,  // [18]
+    mstatus_mprv_r,  // [17]
+    4'b0,  // [16:13] (XS, FS — not implemented)
+    mstatus_mpp,  // [12:11]
+    2'b0,  // [10:9]
+    mstatus_spp,  // [8]
+    mstatus_mpie,  // [7]
+    1'b0,  // [6]
+    mstatus_spie,  // [5]
+    1'b0,  // [4]
+    mstatus_mie,  // [3]
+    1'b0,  // [2]
+    mstatus_sie,  // [1]
+    1'b0  // [0]
   };
 
   // mip: hardware-driven + SSIP (software-writable)
   // SSIP[1]=software-writable, MSIP[3]=irq_software, MTIP[7]=irq_timer,
   // MEIP[11]=irq_external
   assign mip_rval = {
-    20'b0,          // [31:12]
-    irq_external,   // [11] MEIP (read-only)
-    1'b0,           // [10]
-    1'b0,           // [9]  SEIP (not implemented)
-    1'b0,           // [8]
-    irq_timer,      // [7]  MTIP (read-only)
-    1'b0,           // [6]
-    1'b0,           // [5]  STIP (not implemented)
-    1'b0,           // [4]
-    irq_software,   // [3]  MSIP (read-only)
-    1'b0,           // [2]
-    mip_ssip,       // [1]  SSIP (software-writable)
-    1'b0            // [0]
+    20'b0,  // [31:12]
+    irq_external,  // [11] MEIP (read-only)
+    1'b0,  // [10]
+    1'b0,  // [9]  SEIP (not implemented)
+    1'b0,  // [8]
+    irq_timer,  // [7]  MTIP (read-only)
+    1'b0,  // [6]
+    1'b0,  // [5]  STIP (not implemented)
+    1'b0,  // [4]
+    irq_software,  // [3]  MSIP (read-only)
+    1'b0,  // [2]
+    mip_ssip,  // [1]  SSIP (software-writable)
+    1'b0  // [0]
   };
 
   // -------------------------------------------------------------------------
@@ -234,31 +234,30 @@ module kv32_csr
 
   always_comb begin
     irq_pending = 1'b0;
-    irq_cause = 32'h0;
+    irq_cause   = 32'h0;
 
     // Check M-mode interrupts (not delegated) in priority order
     // MEI (bit 11), MSI (bit 3), MTI (bit 7)
     if (mie_enabled && mip_rval[11] && mie_r[11] && !mideleg_r[11]) begin
       irq_pending = 1'b1;
-      irq_cause = {1'b1, 31'd11};  // MEI
+      irq_cause   = {1'b1, 31'd11};  // MEI
     end else if (mie_enabled && mip_rval[3] && mie_r[3] && !mideleg_r[3]) begin
       irq_pending = 1'b1;
-      irq_cause = {1'b1, 31'd3};   // MSI
+      irq_cause   = {1'b1, 31'd3};  // MSI
     end else if (mie_enabled && mip_rval[7] && mie_r[7] && !mideleg_r[7]) begin
       irq_pending = 1'b1;
-      irq_cause = {1'b1, 31'd7};   // MTI
-    end
-    // Check S-mode interrupts (delegated) in priority order
-    // SEI (bit 9), SSI (bit 1), STI (bit 5)
+      irq_cause   = {1'b1, 31'd7};  // MTI
+    end  // Check S-mode interrupts (delegated) in priority order
+         // SEI (bit 9), SSI (bit 1), STI (bit 5)
     else if (sie_enabled && mip_rval[9] && mie_r[9] && mideleg_r[9]) begin
       irq_pending = 1'b1;
-      irq_cause = {1'b1, 31'd9};   // SEI
+      irq_cause   = {1'b1, 31'd9};  // SEI
     end else if (sie_enabled && mip_rval[1] && mie_r[1] && mideleg_r[1]) begin
       irq_pending = 1'b1;
-      irq_cause = {1'b1, 31'd1};   // SSI
+      irq_cause   = {1'b1, 31'd1};  // SSI
     end else if (sie_enabled && mip_rval[5] && mie_r[5] && mideleg_r[5]) begin
       irq_pending = 1'b1;
-      irq_cause = {1'b1, 31'd5};   // STI
+      irq_cause   = {1'b1, 31'd5};  // STI
     end
   end
 
@@ -291,8 +290,7 @@ module kv32_csr
         csr_illegal = (priv_mode == PRIV_U);
 
         // satp: requires S-mode, but trapped by TVM from S-mode
-        CsrSatp:
-        csr_illegal = (priv_mode == PRIV_U) || (priv_mode == PRIV_S && mstatus_tvm_r);
+        CsrSatp: csr_illegal = (priv_mode == PRIV_U) || (priv_mode == PRIV_S && mstatus_tvm_r);
 
         // --- U-mode read-only counters: gated by mcounteren/scounteren ---
         CsrCycle, CsrCycleh, CsrInstret, CsrInstreth: begin
@@ -344,10 +342,10 @@ module kv32_csr
       CsrMconfigptr: csr_rdata = 32'h0;
 
       // M-mode counters
-      CsrMcycle:     csr_rdata = mcycle_r[31:0];
-      CsrMcycleh:    csr_rdata = mcycle_r[63:32];
-      CsrMinstret:   csr_rdata = minstret_r[31:0];
-      CsrMinstreth:  csr_rdata = minstret_r[63:32];
+      CsrMcycle:    csr_rdata = mcycle_r[31:0];
+      CsrMcycleh:   csr_rdata = mcycle_r[63:32];
+      CsrMinstret:  csr_rdata = minstret_r[31:0];
+      CsrMinstreth: csr_rdata = minstret_r[63:32];
 
       // S-mode CSRs
       CsrSstatus:    csr_rdata = mstatus_rval & SstatusMask;
@@ -362,12 +360,12 @@ module kv32_csr
       CsrSatp:       csr_rdata = satp_r;
 
       // U-mode counter shadows (read-only)
-      CsrCycle:      csr_rdata = mcycle_r[31:0];
-      CsrCycleh:     csr_rdata = mcycle_r[63:32];
-      CsrInstret:    csr_rdata = minstret_r[31:0];
-      CsrInstreth:   csr_rdata = minstret_r[63:32];
+      CsrCycle:    csr_rdata = mcycle_r[31:0];
+      CsrCycleh:   csr_rdata = mcycle_r[63:32];
+      CsrInstret:  csr_rdata = minstret_r[31:0];
+      CsrInstreth: csr_rdata = minstret_r[63:32];
 
-      default:       csr_rdata = 32'h0;  // Unimplemented CSR returns 0
+      default: csr_rdata = 32'h0;  // Unimplemented CSR returns 0
     endcase
   end
 
@@ -397,37 +395,37 @@ module kv32_csr
     logic [31:0] newv;
     /* verilator lint_on UNUSEDSIGNAL */
     if (!rst_n) begin
-      mstatus_sie  <= 1'b0;
-      mstatus_mie  <= 1'b0;
-      mstatus_spie <= 1'b0;
-      mstatus_mpie <= 1'b0;
-      mstatus_spp  <= 1'b0;
-      mstatus_mpp  <= 2'b11;
+      mstatus_sie    <= 1'b0;
+      mstatus_mie    <= 1'b0;
+      mstatus_spie   <= 1'b0;
+      mstatus_mpie   <= 1'b0;
+      mstatus_spp    <= 1'b0;
+      mstatus_mpp    <= 2'b11;
       mstatus_mprv_r <= 1'b0;
-      mstatus_sum  <= 1'b0;
-      mstatus_mxr  <= 1'b0;
+      mstatus_sum    <= 1'b0;
+      mstatus_mxr    <= 1'b0;
       mstatus_tvm_r  <= 1'b0;
       mstatus_tw_r   <= 1'b0;
       mstatus_tsr_r  <= 1'b0;
-      mie_r        <= 32'h0;
-      mtvec_r      <= 32'h0;
-      mcounteren_r <= 32'h0;
-      mscratch_r   <= 32'h0;
-      mepc_r       <= 32'h0;
-      mcause_r     <= 32'h0;
-      mtval_r      <= 32'h0;
-      stvec_r      <= 32'h0;
-      sscratch_r   <= 32'h0;
-      sepc_r       <= 32'h0;
-      scause_r     <= 32'h0;
-      stval_r      <= 32'h0;
-      scounteren_r <= 32'h0;
-      medeleg_r    <= 32'h0;
-      mideleg_r    <= 32'h0;
-      satp_r       <= 32'h0;
-      mip_ssip     <= 1'b0;
-      mcycle_r     <= 64'h0;
-      minstret_r   <= 64'h0;
+      mie_r          <= 32'h0;
+      mtvec_r        <= 32'h0;
+      mcounteren_r   <= 32'h0;
+      mscratch_r     <= 32'h0;
+      mepc_r         <= 32'h0;
+      mcause_r       <= 32'h0;
+      mtval_r        <= 32'h0;
+      stvec_r        <= 32'h0;
+      sscratch_r     <= 32'h0;
+      sepc_r         <= 32'h0;
+      scause_r       <= 32'h0;
+      stval_r        <= 32'h0;
+      scounteren_r   <= 32'h0;
+      medeleg_r      <= 32'h0;
+      mideleg_r      <= 32'h0;
+      satp_r         <= 32'h0;
+      mip_ssip       <= 1'b0;
+      mcycle_r       <= 64'h0;
+      minstret_r     <= 64'h0;
     end else begin
       // ------------------------------------------------------------------
       // Counters: increment unless being written via CSR this cycle.
@@ -466,9 +464,9 @@ module kv32_csr
         // MRET: restore mstatus fields
         // ------------------------------------------------------------------
       end else if (mret_taken) begin
-        mstatus_mie  <= mstatus_mpie;
+        mstatus_mie <= mstatus_mpie;
         mstatus_mpie <= 1'b1;
-        mstatus_mpp  <= 2'b11;  // Default to M after MRET (core updates priv_mode)
+        mstatus_mpp <= 2'b11;  // Default to M after MRET (core updates priv_mode)
         mstatus_mprv_r <= (mstatus_mpp == PRIV_M) ? mstatus_mprv_r : 1'b0;
 
         // ------------------------------------------------------------------
@@ -489,18 +487,18 @@ module kv32_csr
             /* verilator lint_off BLKSEQ */
             newv = csr_new_val(mstatus_rval, csr_op, csr_wdata);
             /* verilator lint_on BLKSEQ */
-            mstatus_sie  <= newv[1];
-            mstatus_mie  <= newv[3];
+            mstatus_sie <= newv[1];
+            mstatus_mie <= newv[3];
             mstatus_spie <= newv[5];
             mstatus_mpie <= newv[7];
-            mstatus_spp  <= newv[8];
-            mstatus_mpp  <= newv[12:11];
+            mstatus_spp <= newv[8];
+            mstatus_mpp <= newv[12:11];
             mstatus_mprv_r <= newv[17];
-            mstatus_sum  <= newv[18];
-            mstatus_mxr  <= newv[19];
-            mstatus_tvm_r  <= newv[20];
-            mstatus_tw_r   <= newv[21];
-            mstatus_tsr_r  <= newv[22];
+            mstatus_sum <= newv[18];
+            mstatus_mxr <= newv[19];
+            mstatus_tvm_r <= newv[20];
+            mstatus_tw_r <= newv[21];
+            mstatus_tsr_r <= newv[22];
           end
 
           // --- S-mode sstatus: masked write (only sstatus-visible bits) ---
@@ -516,11 +514,10 @@ module kv32_csr
             mstatus_mxr  <= newv[19];
           end
 
-          CsrMisa: ; // Read-only, ignore write
+          CsrMisa: ;  // Read-only, ignore write
 
           // --- M-mode mie: full write ---
-          CsrMie:
-                        mie_r <= csr_new_val(mie_r, csr_op, csr_wdata);
+          CsrMie: mie_r <= csr_new_val(mie_r, csr_op, csr_wdata);
 
           // --- S-mode sie: masked write (only delegated bits) ---
           CsrSie: begin
@@ -537,8 +534,7 @@ module kv32_csr
             newv = csr_new_val(mtvec_r, csr_op, csr_wdata);
             /* verilator lint_on BLKSEQ */
             // MODE[1:0]: only 0 (Direct) and 1 (Vectored) are valid
-            mtvec_r <= (newv[1:0] == 2'b00 || newv[1:0] == 2'b01) ?
-                       newv : {newv[31:2], 2'b00};
+            mtvec_r <= (newv[1:0] == 2'b00 || newv[1:0] == 2'b01) ? newv : {newv[31:2], 2'b00};
           end
 
           // --- stvec: same as mtvec ---
@@ -546,19 +542,14 @@ module kv32_csr
             /* verilator lint_off BLKSEQ */
             newv = csr_new_val(stvec_r, csr_op, csr_wdata);
             /* verilator lint_on BLKSEQ */
-            stvec_r <= (newv[1:0] == 2'b00 || newv[1:0] == 2'b01) ?
-                       newv : {newv[31:2], 2'b00};
+            stvec_r <= (newv[1:0] == 2'b00 || newv[1:0] == 2'b01) ? newv : {newv[31:2], 2'b00};
           end
 
-          CsrMcounteren:
-                        mcounteren_r <= csr_new_val(mcounteren_r, csr_op, csr_wdata);
-          CsrScounteren:
-                        scounteren_r <= csr_new_val(scounteren_r, csr_op, csr_wdata);
-          CsrMstatush: ; // All zeros, no big-endian — ignore write
-          CsrMscratch:
-                        mscratch_r <= csr_new_val(mscratch_r, csr_op, csr_wdata);
-          CsrSscratch:
-                        sscratch_r <= csr_new_val(sscratch_r, csr_op, csr_wdata);
+          CsrMcounteren: mcounteren_r <= csr_new_val(mcounteren_r, csr_op, csr_wdata);
+          CsrScounteren: scounteren_r <= csr_new_val(scounteren_r, csr_op, csr_wdata);
+          CsrMstatush: ;  // All zeros, no big-endian — ignore write
+          CsrMscratch: mscratch_r <= csr_new_val(mscratch_r, csr_op, csr_wdata);
+          CsrSscratch: sscratch_r <= csr_new_val(sscratch_r, csr_op, csr_wdata);
           CsrMepc: begin
             /* verilator lint_off BLKSEQ */
             newv = csr_new_val(mepc_r, csr_op, csr_wdata);
@@ -571,14 +562,10 @@ module kv32_csr
             /* verilator lint_on BLKSEQ */
             sepc_r <= {newv[31:1], 1'b0};
           end
-          CsrMcause:
-                        mcause_r <= csr_new_val(mcause_r, csr_op, csr_wdata);
-          CsrScause:
-                        scause_r <= csr_new_val(scause_r, csr_op, csr_wdata);
-          CsrMtval:
-                        mtval_r <= csr_new_val(mtval_r, csr_op, csr_wdata);
-          CsrStval:
-                        stval_r <= csr_new_val(stval_r, csr_op, csr_wdata);
+          CsrMcause: mcause_r <= csr_new_val(mcause_r, csr_op, csr_wdata);
+          CsrScause: scause_r <= csr_new_val(scause_r, csr_op, csr_wdata);
+          CsrMtval: mtval_r <= csr_new_val(mtval_r, csr_op, csr_wdata);
+          CsrStval: stval_r <= csr_new_val(stval_r, csr_op, csr_wdata);
 
           // --- mip: only SSIP (bit 1) is software-writable ---
           CsrMip: begin
@@ -615,8 +602,7 @@ module kv32_csr
           end
 
           // satp: storage only (translation is Phase 6)
-          CsrSatp:
-                        satp_r <= csr_new_val(satp_r, csr_op, csr_wdata);
+          CsrSatp: satp_r <= csr_new_val(satp_r, csr_op, csr_wdata);
 
           // Read-only CSRs — ignore writes
           CsrMvendorid: ;
@@ -626,16 +612,12 @@ module kv32_csr
           CsrMconfigptr: ;
 
           // M-mode counters
-          CsrMcycle:
-                        mcycle_r[31:0] <= csr_new_val(mcycle_r[31:0], csr_op, csr_wdata);
-          CsrMcycleh:
-                        mcycle_r[63:32] <= csr_new_val(mcycle_r[63:32], csr_op, csr_wdata);
-          CsrMinstret:
-                        minstret_r[31:0] <= csr_new_val(minstret_r[31:0], csr_op, csr_wdata);
-          CsrMinstreth:
-                        minstret_r[63:32] <= csr_new_val(minstret_r[63:32], csr_op, csr_wdata);
+          CsrMcycle: mcycle_r[31:0] <= csr_new_val(mcycle_r[31:0], csr_op, csr_wdata);
+          CsrMcycleh: mcycle_r[63:32] <= csr_new_val(mcycle_r[63:32], csr_op, csr_wdata);
+          CsrMinstret: minstret_r[31:0] <= csr_new_val(minstret_r[31:0], csr_op, csr_wdata);
+          CsrMinstreth: minstret_r[63:32] <= csr_new_val(minstret_r[63:32], csr_op, csr_wdata);
 
-          default: ; // Unimplemented CSR, ignore write
+          default: ;  // Unimplemented CSR, ignore write
         endcase
       end
     end

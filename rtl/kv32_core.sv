@@ -46,30 +46,30 @@ module kv32_core
     ST_WRITEBACK
   } state_t;
 
-  state_t        state;
+  state_t            state;
 
   // Current instruction's PC and instruction word
-  logic   [31:0] pc_reg;
-  logic   [31:0] instr_reg;
+  logic       [31:0] pc_reg;
+  logic       [31:0] instr_reg;
 
   // Fetch handshake tracking
-  logic          fetch_req;
-  logic          fetch_wait;
+  logic              fetch_req;
+  logic              fetch_wait;
 
   // Latched results from EXEC (for MEM/WRITEBACK)
-  logic   [31:0] ex_result_reg;
-  logic   [31:0] rs2_data_reg;
-  logic   [31:0] load_data_reg;  // Latched load data from mem_fe
+  logic       [31:0] ex_result_reg;
+  logic       [31:0] rs2_data_reg;
+  logic       [31:0] load_data_reg;  // Latched load data from mem_fe
 
   // Branch/jump redirect target (latched in EXEC, used in WRITEBACK)
-  logic   [31:0] branch_target_reg;
-  logic          branch_redirect;
+  logic       [31:0] branch_target_reg;
+  logic              branch_redirect;
 
   // Access fault from MEM state — prevents writeback on fault
-  logic          trap_from_mem;
+  logic              trap_from_mem;
 
   // Current privilege mode (Phase 5: M/S/U support)
-  priv_mode_t    priv_mode;
+  priv_mode_t        priv_mode;
 
   // ===========================================================================
   // C extension: instruction alignment and decompression
@@ -85,12 +85,12 @@ module kv32_core
   //     (requires second fetch of next word)
   // ===========================================================================
 
-  logic          fetch_second;  // Second fetch needed for straddling
-  logic   [15:0] instr_half;  // Upper half of straddling instruction
-  logic          is_compressed_reg;  // Latched version for EXEC/MEM/WB
+  logic              fetch_second;  // Second fetch needed for straddling
+  logic       [15:0] instr_half;  // Upper half of straddling instruction
+  logic              is_compressed_reg;  // Latched version for EXEC/MEM/WB
 
   // Word-align the fetch address
-  logic   [31:0] fetch_addr;
+  logic       [31:0] fetch_addr;
   assign fetch_addr = fetch_second ? {pc_reg[31:2] + 30'd1, 2'b00} : {pc_reg[31:2], 2'b00};
 
   // ===========================================================================
@@ -196,39 +196,39 @@ module kv32_core
   assign illegal_combined = (is_compressed_reg & decomp_illegal) | illegal_id;
 
   kv32_decoder u_decoder (
-      .instr       (decoder_instr),
-      .rd          (rd_id),
-      .funct3      (funct3_id),
-      .rs1         (rs1_id),
-      .rs2         (rs2_id),
-      .imm         (imm_id),
-      .use_imm     (use_imm_id),
-      .alu_op_valid(alu_op_valid_id),
-      .alu_op      (alu_op_id),
-      .mem_read    (mem_read_id),
-      .mem_write   (mem_write_id),
-      .reg_write   (reg_write_id),
-      .branch      (branch_id),
-      .jump        (jump_id),
-      .is_jalr     (is_jalr_id),
-      .illegal     (illegal_id),
-      .lui         (lui_id),
-      .auipc       (auipc_id),
-      .csr_op      (csr_op_id),
-      .csr_wen     (csr_wen_id),
-      .is_csr      (is_csr_id),
-      .is_mret     (is_mret_id),
-      .is_sret     (is_sret_id),
-      .is_wfi      (is_wfi_id),
+      .instr        (decoder_instr),
+      .rd           (rd_id),
+      .funct3       (funct3_id),
+      .rs1          (rs1_id),
+      .rs2          (rs2_id),
+      .imm          (imm_id),
+      .use_imm      (use_imm_id),
+      .alu_op_valid (alu_op_valid_id),
+      .alu_op       (alu_op_id),
+      .mem_read     (mem_read_id),
+      .mem_write    (mem_write_id),
+      .reg_write    (reg_write_id),
+      .branch       (branch_id),
+      .jump         (jump_id),
+      .is_jalr      (is_jalr_id),
+      .illegal      (illegal_id),
+      .lui          (lui_id),
+      .auipc        (auipc_id),
+      .csr_op       (csr_op_id),
+      .csr_wen      (csr_wen_id),
+      .is_csr       (is_csr_id),
+      .is_mret      (is_mret_id),
+      .is_sret      (is_sret_id),
+      .is_wfi       (is_wfi_id),
       .is_sfence_vma(is_sfence_vma_id),
-      .use_zimm    (use_zimm_id),
-      .is_ecall    (is_ecall_id),
-      .is_ebreak   (is_ebreak_id),
-      .is_m_mul    (is_m_mul_id),
-      .is_m_div    (is_m_div_id),
-      .is_lr       (is_lr_id),
-      .is_sc       (is_sc_id),
-      .is_amo      (is_amo_id)
+      .use_zimm     (use_zimm_id),
+      .is_ecall     (is_ecall_id),
+      .is_ebreak    (is_ebreak_id),
+      .is_m_mul     (is_m_mul_id),
+      .is_m_div     (is_m_div_id),
+      .is_lr        (is_lr_id),
+      .is_sc        (is_sc_id),
+      .is_amo       (is_amo_id)
   );
 
   // ===========================================================================
@@ -440,7 +440,7 @@ module kv32_core
   logic        mstatus_spp;
   logic [31:0] sepc_out;  // Used in Stage 5 for SRET
   logic        irq_pending;  // Interrupt pending from CSR module
-  logic [31:0] irq_cause;    // Cause value for pending interrupt
+  logic [31:0] irq_cause;  // Cause value for pending interrupt
   // verilator lint_on UNUSEDSIGNAL
   logic [31:0] mepc_out;
   logic        instr_retired;
@@ -488,18 +488,18 @@ module kv32_core
         trap_taken = 1'b1;
         trap_cause = 32'd2;  // Illegal instruction
         trap_val   = instr_reg;
-      // SRET: illegal in U-mode, or in S-mode if mstatus.tsr=1
+        // SRET: illegal in U-mode, or in S-mode if mstatus.tsr=1
       end else if (is_sret_id && (priv_mode == PRIV_U ||
                                   (priv_mode == PRIV_S && mstatus_tsr))) begin
         trap_taken = 1'b1;
         trap_cause = 32'd2;  // Illegal instruction
         trap_val   = instr_reg;
-      // WFI: traps if in S/U-mode with mstatus.tw=1
+        // WFI: traps if in S/U-mode with mstatus.tw=1
       end else if (is_wfi_id && priv_mode != PRIV_M && mstatus_tw) begin
         trap_taken = 1'b1;
         trap_cause = 32'd2;  // Illegal instruction
         trap_val   = instr_reg;
-      // SFENCE.VMA: traps if in S-mode with mstatus.tvm=1
+        // SFENCE.VMA: traps if in S-mode with mstatus.tvm=1
       end else if (is_sfence_vma_id && priv_mode == PRIV_S && mstatus_tvm) begin
         trap_taken = 1'b1;
         trap_cause = 32'd2;  // Illegal instruction
@@ -511,9 +511,7 @@ module kv32_core
       end else if (is_ecall_id) begin
         trap_taken = 1'b1;
         // ECALL cause varies by privilege level: 8=U, 9=S, 11=M
-        trap_cause = (priv_mode == PRIV_U) ? 32'd8 :
-                     (priv_mode == PRIV_S) ? 32'd9 :
-                                             32'd11;
+        trap_cause = (priv_mode == PRIV_U) ? 32'd8 : (priv_mode == PRIV_S) ? 32'd9 : 32'd11;
         trap_val   = 32'h0;
       end else if (illegal_combined || csr_illegal) begin
         trap_taken = 1'b1;
@@ -553,12 +551,10 @@ module kv32_core
     if (trap_taken) begin
       if (trap_cause[31]) begin
         // Interrupt: check mideleg
-        if (priv_mode <= PRIV_S && mideleg_out[trap_cause[4:0]])
-          trap_to_smode = 1'b1;
+        if (priv_mode <= PRIV_S && mideleg_out[trap_cause[4:0]]) trap_to_smode = 1'b1;
       end else begin
         // Exception: check medeleg
-        if (priv_mode <= PRIV_S && medeleg_out[trap_cause[4:0]])
-          trap_to_smode = 1'b1;
+        if (priv_mode <= PRIV_S && medeleg_out[trap_cause[4:0]]) trap_to_smode = 1'b1;
       end
     end
   end
@@ -787,7 +783,7 @@ module kv32_core
       .irq_timer      (irq_timer_i),
       .irq_software   (irq_software_i),
       .trap_taken     (trap_taken),
-      .trap_pc      (trap_pc),
+      .trap_pc        (trap_pc),
       .trap_cause     (trap_cause),
       .trap_val       (trap_val),
       .trap_to_smode  (trap_to_smode),
@@ -801,7 +797,7 @@ module kv32_core
       .mideleg_out    (mideleg_out),
       .mstatus_mie    (mstatus_mie),
       .mstatus_sie_o  (mstatus_sie),
-      .mstatus_mprv   (),  // Phase 6: MMU will use
+      .mstatus_mprv   (),                // Phase 6: MMU will use
       .mstatus_tsr    (mstatus_tsr),
       .mstatus_tw     (mstatus_tw),
       .mstatus_tvm    (mstatus_tvm),
