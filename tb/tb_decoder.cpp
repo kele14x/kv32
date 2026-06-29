@@ -67,6 +67,7 @@ struct Exp {
     bool reg_write=false, branch=false, jump=false, is_jalr=false;
     bool illegal=false, lui=false, auipc=false;
     uint8_t csr_op=0; bool csr_wen=false, is_csr=false, is_mret=false;
+    bool is_sret=false, is_wfi=false, is_sfence_vma=false;
     bool use_zimm=false, is_ecall=false, is_ebreak=false;
     bool is_lr=false, is_sc=false, is_amo=false;
 };
@@ -101,6 +102,7 @@ static void check(Vkv32_decoder* d, const char* name, uint32_t instr, Exp e) {
     CMP(reg_write); CMP(branch); CMP(jump); CMP(is_jalr);
     CMP(illegal); CMP(lui); CMP(auipc);
     CMP(csr_op); CMP(csr_wen); CMP(is_csr); CMP(is_mret);
+    CMP(is_sret); CMP(is_wfi); CMP(is_sfence_vma);
     CMP(use_zimm); CMP(is_ecall); CMP(is_ebreak);
     CMP(is_lr); CMP(is_sc); CMP(is_amo);
 #undef CMP
@@ -317,6 +319,23 @@ int main() {
       Exp e = fields(i); e.is_mret=true;
       check(d, "MRET", i, e); }
 
+    { uint32_t i = i_type(0x102, 0, 0, 0, OpSystem);
+      Exp e = fields(i); e.is_sret=true;
+      check(d, "SRET", i, e); }
+
+    { uint32_t i = i_type(0x105, 0, 0, 0, OpSystem);
+      Exp e = fields(i); e.is_wfi=true;
+      check(d, "WFI", i, e); }
+
+    // SFENCE.VMA: funct7=0001001, can have non-zero rs1/rs2
+    { uint32_t i = r(0b0001001, 0, 0, 0, 0, OpSystem);
+      Exp e = fields(i); e.is_sfence_vma=true;
+      check(d, "SFENCE.VMA", i, e); }
+
+    { uint32_t i = r(0b0001001, 5, 3, 0, 0, OpSystem);
+      Exp e = fields(i); e.is_sfence_vma=true;
+      check(d, "SFENCE.VMA rs1/rs2", i, e); }
+
     // ---- Illegal instructions ----
     // Unknown opcode: only illegal=1, all other signals 0
     { Exp e; e.illegal=true;
@@ -395,6 +414,22 @@ int main() {
     { uint32_t i = i_type(0x302, 1, 0, 0, OpSystem);
       Exp e = fields(i); e.illegal=true;
       check(d, "illegal MRET rs1", i, e); }
+
+    // SRET requires rd=x0 and rs1=x0
+    { uint32_t i = i_type(0x102, 0, 0, 1, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal SRET rd", i, e); }
+    { uint32_t i = i_type(0x102, 1, 0, 0, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal SRET rs1", i, e); }
+
+    // WFI requires rd=x0 and rs1=x0
+    { uint32_t i = i_type(0x105, 0, 0, 1, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal WFI rd", i, e); }
+    { uint32_t i = i_type(0x105, 1, 0, 0, OpSystem);
+      Exp e = fields(i); e.illegal=true;
+      check(d, "illegal WFI rs1", i, e); }
 
     // FENCE.I (funct3=001) is a valid NOP in this pipeline.
     { Exp e = fields(0x0000100F); check(d, "FENCE.I valid NOP", 0x0000100F, e); }

@@ -148,6 +148,12 @@ $(RISCV_TESTS_BUILD)/rv32ua-p-%: $(RISCV_TESTS_DIR)/isa/rv32ua/%.S $(RISCV_TESTS
 	$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32ia_zicsr -mabi=$(RISCV_MABI) \
 		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
 
+# Compile a single rv32mi test (M-mode privilege tests)
+$(RISCV_TESTS_BUILD)/rv32mi-p-%: $(RISCV_TESTS_DIR)/isa/rv32mi/%.S $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
+	@echo "  CC  $* (M-mode)"; \
+	$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32imac_zicsr -mabi=$(RISCV_MABI) \
+		$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $< -o $@
+
 $(RISCV_TESTS_BUILD):
 	@mkdir -p $@
 
@@ -191,6 +197,15 @@ riscv-tests-compile: $(RISCV_TESTS_DIR)/env/p/link.ld | $(RISCV_TESTS_BUILD)
 				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
 		fi; \
 	done
+	@for test in $(RISCV_TESTS_DIR)/isa/rv32mi/*.S; do \
+		name=$$(basename $$test .S); \
+		target=$(RISCV_TESTS_BUILD)/rv32mi-p-$$name; \
+		if [ ! -f $$target ]; then \
+			echo "  CC  $$name (M-mode)"; \
+			$(RISCV_GCC) $(RISCV_CFLAGS) -march=rv32imac_zicsr -mabi=$(RISCV_MABI) \
+				$(RISCV_INCLUDES) $(RISCV_LDFLAGS) $$test -o $$target 2>&1; \
+		fi; \
+	done
 
 # Run a single riscv-test: make riscv-test-TESTNAME
 riscv-test-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ui-p-%
@@ -208,10 +223,14 @@ riscv-test-c-%: verilator-build $(RISCV_TESTS_BUILD)/rv32uc-p-%
 riscv-test-a-%: verilator-build $(RISCV_TESTS_BUILD)/rv32ua-p-%
 	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32ua-p-$* $(MEM_LATENCY_ARGS)
 
-# Run all rv32ui, rv32um, rv32uc, and rv32ua tests (auto-compiles if needed, skips .dump files)
+# Run a single M-mode test: make riscv-test-mi-TESTNAME
+riscv-test-mi-%: verilator-build $(RISCV_TESTS_BUILD)/rv32mi-p-%
+	./build/obj_dir/Vtb_core --binary $(RISCV_TESTS_BUILD)/rv32mi-p-$* $(MEM_LATENCY_ARGS)
+
+# Run all rv32ui, rv32um, rv32uc, rv32ua, and rv32mi tests
 riscv-tests: verilator-build riscv-tests-compile
 	@pass=0; fail=0; skip=0; total=0; \
-	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-* $(RISCV_TESTS_BUILD)/rv32um-p-* $(RISCV_TESTS_BUILD)/rv32uc-p-* $(RISCV_TESTS_BUILD)/rv32ua-p-*; do \
+	for test in $(RISCV_TESTS_BUILD)/rv32ui-p-* $(RISCV_TESTS_BUILD)/rv32um-p-* $(RISCV_TESTS_BUILD)/rv32uc-p-* $(RISCV_TESTS_BUILD)/rv32ua-p-* $(RISCV_TESTS_BUILD)/rv32mi-p-*; do \
 		case "$$test" in *.dump) continue;; esac; \
 		name=$$(basename $$test); \
 		total=$$((total+1)); \

@@ -68,6 +68,9 @@ module kv32_core
   // Access fault from MEM state — prevents writeback on fault
   logic          trap_from_mem;
 
+  // Current privilege mode (Phase 5: M/S/U support)
+  priv_mode_t    priv_mode;
+
   // ===========================================================================
   // C extension: instruction alignment and decompression
   // ===========================================================================
@@ -177,7 +180,9 @@ module kv32_core
   logic lui_id, auipc_id;
   logic    [3:0] alu_op_id;
   csr_op_t       csr_op_id;
-  logic csr_wen_id, is_csr_id, is_mret_id, use_zimm_id;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic csr_wen_id, is_csr_id, is_mret_id, is_sret_id, is_wfi_id, is_sfence_vma_id, use_zimm_id;
+  /* verilator lint_on UNUSEDSIGNAL */
   logic is_ecall_id, is_ebreak_id;
   logic is_m_mul_id, is_m_div_id;
   logic is_lr_id, is_sc_id, is_amo_id;
@@ -213,6 +218,9 @@ module kv32_core
       .csr_wen     (csr_wen_id),
       .is_csr      (is_csr_id),
       .is_mret     (is_mret_id),
+      .is_sret     (is_sret_id),
+      .is_wfi      (is_wfi_id),
+      .is_sfence_vma(is_sfence_vma_id),
       .use_zimm    (use_zimm_id),
       .is_ecall    (is_ecall_id),
       .is_ebreak   (is_ebreak_id),
@@ -421,6 +429,18 @@ module kv32_core
   // verilator lint_off UNUSEDSIGNAL
   logic [31:0] mtvec_out;
   logic        mstatus_mie;
+  logic [31:0] stvec_out;
+  logic [31:0] medeleg_out;
+  logic [31:0] mideleg_out;
+  logic        mstatus_tsr;
+  logic        mstatus_tw;
+  logic        mstatus_tvm;
+  logic        mstatus_sie;
+  logic [ 1:0] mstatus_mpp;
+  logic        mstatus_spp;
+  logic [31:0] sepc_out;  // Used in Stage 5 for SRET
+  logic        irq_pending;  // Interrupt pending from CSR module
+  logic [31:0] irq_cause;    // Cause value for pending interrupt
   // verilator lint_on UNUSEDSIGNAL
   logic [31:0] mepc_out;
   logic        instr_retired;
@@ -444,21 +464,56 @@ module kv32_core
   logic [31:0] trap_cause;
   logic [31:0] trap_val;
 
+  // Trap routing: should this trap go to S-mode handler?
+  logic        trap_to_smode;
+  logic [31:0] trap_vector_pc;  // PC to redirect to (mtvec or stvec, direct or vectored)
+
   always_comb begin
     trap_taken = 1'b0;
     trap_pc = pc_reg;
     trap_cause = 32'h0;
     trap_val = 32'h0;
 
+    // Asynchronous interrupt checking: at ST_FETCH boundary (between instructions)
+    if (state == ST_FETCH && irq_pending && !fetch_req && !fetch_wait) begin
+      trap_taken = 1'b1;
+      trap_cause = irq_cause;
+      trap_val   = 32'h0;
+    end
+
     if (state == ST_EXEC) begin
-      // EXEC-stage traps: breakpoint > ecall > illegal
-      if (is_ebreak_id) begin
+      // EXEC-stage traps: privilege checks first, then breakpoint/ecall/illegal
+      // MRET: only legal in M-mode
+      if (is_mret_id && priv_mode != PRIV_M) begin
+        trap_taken = 1'b1;
+        trap_cause = 32'd2;  // Illegal instruction
+        trap_val   = instr_reg;
+      // SRET: illegal in U-mode, or in S-mode if mstatus.tsr=1
+      end else if (is_sret_id && (priv_mode == PRIV_U ||
+                                  (priv_mode == PRIV_S && mstatus_tsr))) begin
+        trap_taken = 1'b1;
+        trap_cause = 32'd2;  // Illegal instruction
+        trap_val   = instr_reg;
+      // WFI: traps if in S/U-mode with mstatus.tw=1
+      end else if (is_wfi_id && priv_mode != PRIV_M && mstatus_tw) begin
+        trap_taken = 1'b1;
+        trap_cause = 32'd2;  // Illegal instruction
+        trap_val   = instr_reg;
+      // SFENCE.VMA: traps if in S-mode with mstatus.tvm=1
+      end else if (is_sfence_vma_id && priv_mode == PRIV_S && mstatus_tvm) begin
+        trap_taken = 1'b1;
+        trap_cause = 32'd2;  // Illegal instruction
+        trap_val   = instr_reg;
+      end else if (is_ebreak_id) begin
         trap_taken = 1'b1;
         trap_cause = 32'd3;  // Breakpoint
         trap_val   = pc_reg;
       end else if (is_ecall_id) begin
         trap_taken = 1'b1;
-        trap_cause = 32'd11;  // Environment call from M-mode
+        // ECALL cause varies by privilege level: 8=U, 9=S, 11=M
+        trap_cause = (priv_mode == PRIV_U) ? 32'd8 :
+                     (priv_mode == PRIV_S) ? 32'd9 :
+                                             32'd11;
         trap_val   = 32'h0;
       end else if (illegal_combined || csr_illegal) begin
         trap_taken = 1'b1;
@@ -490,6 +545,47 @@ module kv32_core
     end
   end
 
+  // -------------------------------------------------------------------------
+  // Trap delegation: determine whether trap goes to S-mode or M-mode handler
+  // -------------------------------------------------------------------------
+  always_comb begin
+    trap_to_smode = 1'b0;
+    if (trap_taken) begin
+      if (trap_cause[31]) begin
+        // Interrupt: check mideleg
+        if (priv_mode <= PRIV_S && mideleg_out[trap_cause[4:0]])
+          trap_to_smode = 1'b1;
+      end else begin
+        // Exception: check medeleg
+        if (priv_mode <= PRIV_S && medeleg_out[trap_cause[4:0]])
+          trap_to_smode = 1'b1;
+      end
+    end
+  end
+
+  // -------------------------------------------------------------------------
+  // Trap vector PC: compute redirect address (direct or vectored)
+  // -------------------------------------------------------------------------
+  always_comb begin
+    if (trap_to_smode) begin
+      // S-mode trap: use stvec
+      if (trap_cause[31] && stvec_out[1:0] == 2'b01) begin
+        // Vectored mode for interrupts: BASE + 4 * cause
+        trap_vector_pc = {stvec_out[31:2], 2'b00} + {25'b0, trap_cause[4:0], 2'b00};
+      end else begin
+        trap_vector_pc = {stvec_out[31:2], 2'b00};
+      end
+    end else begin
+      // M-mode trap: use mtvec
+      if (trap_cause[31] && mtvec_out[1:0] == 2'b01) begin
+        // Vectored mode for interrupts: BASE + 4 * cause
+        trap_vector_pc = {mtvec_out[31:2], 2'b00} + {25'b0, trap_cause[4:0], 2'b00};
+      end else begin
+        trap_vector_pc = {mtvec_out[31:2], 2'b00};
+      end
+    end
+  end
+
   // ===========================================================================
   // Branch / jump evaluation
   // ===========================================================================
@@ -503,8 +599,41 @@ module kv32_core
 
     if (state == ST_EXEC) begin
       if (is_mret_id) begin
-        branch_taken  = 1'b1;
-        branch_target = mepc_out;
+        // MRET: return from M-mode trap
+        // Privilege check: only legal in M-mode
+        if (priv_mode != PRIV_M) begin
+          // Illegal instruction trap
+        end else begin
+          branch_taken  = 1'b1;
+          branch_target = mepc_out;
+        end
+      end else if (is_sret_id) begin
+        // SRET: return from S-mode trap
+        // Privilege check: illegal in U-mode, or in S-mode if mstatus.tsr=1
+        if (priv_mode == PRIV_U) begin
+          // Illegal instruction trap
+        end else if (priv_mode == PRIV_S && mstatus_tsr) begin
+          // Illegal instruction trap
+        end else begin
+          branch_taken  = 1'b1;
+          branch_target = sepc_out;
+        end
+      end else if (is_wfi_id) begin
+        // WFI: wait for interrupt
+        // Privilege check: traps if executed in S/U-mode with mstatus.tw=1
+        if (priv_mode != PRIV_M && mstatus_tw) begin
+          // Illegal instruction trap (handled in trap detection)
+        end else begin
+          // NOP (no actual wait in this implementation)
+        end
+      end else if (is_sfence_vma_id) begin
+        // SFENCE.VMA: fence TLB entries
+        // Privilege check: traps if executed in S-mode with mstatus.tvm=1
+        if (priv_mode == PRIV_S && mstatus_tvm) begin
+          // Illegal instruction trap (handled in trap detection)
+        end else begin
+          // NOP (no TLB in this implementation)
+        end
       end else if (branch_id) begin
         unique case (funct3_id)
           3'b000:  branch_taken = (rs1_data == rs2_data);  // BEQ
@@ -635,33 +764,55 @@ module kv32_core
   logic mret_taken;
   assign mret_taken = is_mret_id && (state == ST_EXEC);
 
+  // sret_taken: same gating as mret_taken
+  logic sret_taken;
+  assign sret_taken = is_sret_id && (state == ST_EXEC);
+
   // ===========================================================================
   // CSR module instantiation
   // ===========================================================================
 
+  /* verilator lint_off PINCONNECTEMPTY */
   kv32_csr u_csr (
-      .clk          (clk),
-      .rst_n        (rst_n),
-      .csr_addr     (csr_addr_w),
-      .csr_wdata    (csr_wdata_w),
-      .csr_op       (csr_op_id),
-      .csr_wen      (csr_wen_gated),
-      .is_csr       (is_csr_id),
-      .csr_rdata    (csr_rdata),
-      .irq_external (irq_external_i),
-      .irq_timer    (irq_timer_i),
-      .irq_software (irq_software_i),
-      .trap_taken   (trap_taken),
+      .clk            (clk),
+      .rst_n          (rst_n),
+      .priv_mode      (priv_mode),
+      .csr_addr       (csr_addr_w),
+      .csr_wdata      (csr_wdata_w),
+      .csr_op         (csr_op_id),
+      .csr_wen        (csr_wen_gated),
+      .is_csr         (is_csr_id),
+      .csr_rdata      (csr_rdata),
+      .irq_external   (irq_external_i),
+      .irq_timer      (irq_timer_i),
+      .irq_software   (irq_software_i),
+      .trap_taken     (trap_taken),
       .trap_pc      (trap_pc),
-      .trap_cause   (trap_cause),
-      .trap_val     (trap_val),
-      .mret_taken   (mret_taken),
-      .mtvec_out    (mtvec_out),
-      .mepc_out     (mepc_out),
-      .mstatus_mie  (mstatus_mie),
-      .csr_illegal  (csr_illegal),
-      .instr_retired(instr_retired)
+      .trap_cause     (trap_cause),
+      .trap_val       (trap_val),
+      .trap_to_smode  (trap_to_smode),
+      .mret_taken     (mret_taken),
+      .sret_taken     (sret_taken),
+      .mtvec_out      (mtvec_out),
+      .mepc_out       (mepc_out),
+      .stvec_out      (stvec_out),
+      .sepc_out       (sepc_out),
+      .medeleg_out    (medeleg_out),
+      .mideleg_out    (mideleg_out),
+      .mstatus_mie    (mstatus_mie),
+      .mstatus_sie_o  (mstatus_sie),
+      .mstatus_mprv   (),  // Phase 6: MMU will use
+      .mstatus_tsr    (mstatus_tsr),
+      .mstatus_tw     (mstatus_tw),
+      .mstatus_tvm    (mstatus_tvm),
+      .mstatus_mpp_out(mstatus_mpp),
+      .mstatus_spp_out(mstatus_spp),
+      .csr_illegal    (csr_illegal),
+      .irq_pending    (irq_pending),
+      .irq_cause      (irq_cause),
+      .instr_retired  (instr_retired)
   );
+  /* verilator lint_on PINCONNECTEMPTY */
 
   // ===========================================================================
   // Main FSM
@@ -683,60 +834,72 @@ module kv32_core
       branch_target_reg <= 32'h0;
       branch_redirect   <= 1'b0;
       trap_from_mem     <= 1'b0;
+      priv_mode         <= PRIV_M;  // Boot in M-mode
     end else begin
       trap_from_mem <= 1'b0;  // Default: clear each cycle
 
       unique case (state)
         ST_FETCH: begin
-          // Handle imem handshake
-          if (fetch_req && imem_gnt && !imem_ack) begin
-            // Request granted but no ack yet — wait for ack
-            fetch_req  <= 1'b0;
-            fetch_wait <= 1'b1;
-          end
-
-          if (imem_ack) begin
-            fetch_req  <= 1'b0;
+          // Check for pending interrupts before fetching
+          // This is the "between instructions" boundary where async interrupts are taken
+          if (trap_taken) begin
+            // Interrupt pending: redirect to trap vector
+            pc_reg     <= trap_vector_pc;
+            priv_mode  <= trap_to_smode ? PRIV_S : PRIV_M;
+            fetch_req  <= 1'b1;
             fetch_wait <= 1'b0;
-
-            if (fetch_second) begin
-              // Second fetch for straddling 32-bit instruction complete
-              // Assemble: {second_word[15:0], first_word[31:16]}
-              instr_reg         <= {imem_rdata[15:0], instr_half};
-              is_compressed_reg <= 1'b0;
-              fetch_second      <= 1'b0;
-              state             <= ST_DECODE;
-            end else if (pc_reg[1]) begin
-              // pc[1]=1: instruction starts at upper halfword
-              if (imem_rdata[17:16] != 2'b11) begin
-                // 16-bit compressed instruction in upper halfword
-                instr_reg         <= {16'h0, imem_rdata[31:16]};
-                is_compressed_reg <= 1'b1;
-                state             <= ST_DECODE;
-              end else begin
-                // 32-bit instruction straddling word boundary
-                // Latch upper half, fetch next word for lower half
-                instr_half   <= imem_rdata[31:16];
-                fetch_second <= 1'b1;
-                // Stay in ST_FETCH — next fetch will get the second word
-              end
-            end else begin
-              // pc[1]=0: instruction starts at lower halfword
-              if (imem_rdata[1:0] != 2'b11) begin
-                // 16-bit compressed instruction in lower halfword
-                instr_reg         <= {16'h0, imem_rdata[15:0]};
-                is_compressed_reg <= 1'b1;
-                state             <= ST_DECODE;
-              end else begin
-                // 32-bit instruction, fully contained in fetched word
-                instr_reg         <= imem_rdata;
-                is_compressed_reg <= 1'b0;
-                state             <= ST_DECODE;
-              end
+            // Stay in ST_FETCH to begin fetching from trap vector
+          end else begin
+            // Normal fetch: handle imem handshake
+            if (fetch_req && imem_gnt && !imem_ack) begin
+              // Request granted but no ack yet — wait for ack
+              fetch_req  <= 1'b0;
+              fetch_wait <= 1'b1;
             end
-          end else if (!fetch_req && !fetch_wait) begin
-            // No request outstanding — issue one
-            fetch_req <= 1'b1;
+
+            if (imem_ack) begin
+              fetch_req  <= 1'b0;
+              fetch_wait <= 1'b0;
+
+              if (fetch_second) begin
+                // Second fetch for straddling 32-bit instruction complete
+                // Assemble: {second_word[15:0], first_word[31:16]}
+                instr_reg         <= {imem_rdata[15:0], instr_half};
+                is_compressed_reg <= 1'b0;
+                fetch_second      <= 1'b0;
+                state             <= ST_DECODE;
+              end else if (pc_reg[1]) begin
+                // pc[1]=1: instruction starts at upper halfword
+                if (imem_rdata[17:16] != 2'b11) begin
+                  // 16-bit compressed instruction in upper halfword
+                  instr_reg         <= {16'h0, imem_rdata[31:16]};
+                  is_compressed_reg <= 1'b1;
+                  state             <= ST_DECODE;
+                end else begin
+                  // 32-bit instruction straddling word boundary
+                  // Latch upper half, fetch next word for lower half
+                  instr_half   <= imem_rdata[31:16];
+                  fetch_second <= 1'b1;
+                  // Stay in ST_FETCH — next fetch will get the second word
+                end
+              end else begin
+                // pc[1]=0: instruction starts at lower halfword
+                if (imem_rdata[1:0] != 2'b11) begin
+                  // 16-bit compressed instruction in lower halfword
+                  instr_reg         <= {16'h0, imem_rdata[15:0]};
+                  is_compressed_reg <= 1'b1;
+                  state             <= ST_DECODE;
+                end else begin
+                  // 32-bit instruction, fully contained in fetched word
+                  instr_reg         <= imem_rdata;
+                  is_compressed_reg <= 1'b0;
+                  state             <= ST_DECODE;
+                end
+              end
+            end else if (!fetch_req && !fetch_wait) begin
+              // No request outstanding — issue one
+              fetch_req <= 1'b1;
+            end
           end
         end
 
@@ -748,19 +911,27 @@ module kv32_core
 
         ST_EXEC: begin
           if (trap_taken) begin
-            // Trap: redirect PC to mtvec, return to FETCH
-            pc_reg     <= {mtvec_out[31:2], 2'b00};
+            // Trap: redirect PC to trap vector, update privilege, return to FETCH
+            pc_reg     <= trap_vector_pc;
+            priv_mode  <= trap_to_smode ? PRIV_S : PRIV_M;
             fetch_req  <= 1'b1;
             fetch_wait <= 1'b0;
             state      <= ST_FETCH;
           end else if (branch_taken) begin
-            // Branch/jump/MRET: latch target and result, go to MEM (pass-through)
+            // Branch/jump/MRET/SRET: latch target and result, go to MEM (pass-through)
             // then WRITEBACK to write link register if needed
             branch_target_reg <= branch_target;
             branch_redirect   <= 1'b1;
             ex_result_reg     <= ex_result;
             rs2_data_reg      <= rs2_data;
             state             <= ST_MEM;
+
+            // MRET/SRET: restore privilege mode from saved fields
+            if (is_mret_id) begin
+              priv_mode <= priv_mode_t'(mstatus_mpp);
+            end else if (is_sret_id) begin
+              priv_mode <= mstatus_spp ? PRIV_S : PRIV_U;
+            end
           end else if ((is_m_mul_id || is_m_div_id) && !m_done) begin
             // M-unit still computing — stay in EXEC
           end else begin
@@ -780,7 +951,8 @@ module kv32_core
                   if (fe_err) begin
                     // Read phase failed
                     trap_from_mem <= 1'b1;
-                    pc_reg        <= {mtvec_out[31:2], 2'b00};
+                    pc_reg        <= trap_vector_pc;
+                    priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
                     fetch_req     <= 1'b1;
                     fetch_wait    <= 1'b0;
                     state         <= ST_FETCH;
@@ -795,7 +967,8 @@ module kv32_core
                   if (fe_err) begin
                     // Write phase failed
                     trap_from_mem <= 1'b1;
-                    pc_reg        <= {mtvec_out[31:2], 2'b00};
+                    pc_reg        <= trap_vector_pc;
+                    priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
                     fetch_req     <= 1'b1;
                     fetch_wait    <= 1'b0;
                     state         <= ST_FETCH;
@@ -816,7 +989,8 @@ module kv32_core
               // Reservation succeeded: write completed
               if (fe_err) begin
                 trap_from_mem <= 1'b1;
-                pc_reg        <= {mtvec_out[31:2], 2'b00};
+                pc_reg        <= trap_vector_pc;
+                priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
                 fetch_req     <= 1'b1;
                 fetch_wait    <= 1'b0;
                 state         <= ST_FETCH;
@@ -834,8 +1008,9 @@ module kv32_core
 
               if (fe_err) begin
                 trap_from_mem <= 1'b1;
-                // Trap: redirect PC to mtvec, return to FETCH (skip WRITEBACK)
-                pc_reg        <= {mtvec_out[31:2], 2'b00};
+                // Trap: redirect PC to trap vector, update privilege, return to FETCH (skip WRITEBACK)
+                pc_reg        <= trap_vector_pc;
+                priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
                 fetch_req     <= 1'b1;
                 fetch_wait    <= 1'b0;
                 state         <= ST_FETCH;

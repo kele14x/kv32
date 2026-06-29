@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-kv32 is a minimal RISC-V RV32IMAC soft core in SystemVerilog, targeting Linux boot on an FPGA. Multi-cycle state machine (FETCH/DECODE/EXEC/MEM/WRITEBACK) executing one instruction at a time. Phase 4 (RV32I + M extension + C extension + A extension) is complete.
+kv32 is a minimal RISC-V RV32IMAC soft core in SystemVerilog, targeting Linux boot on an FPGA. Multi-cycle state machine (FETCH/DECODE/EXEC/MEM/WRITEBACK) executing one instruction at a time. Phase 5 (RV32IMAC + M/S/U privilege modes) is complete.
 
 **Canonical spec**: SPEC.md is the single source of truth for architectural decisions. CLAUDE.md supplements it with agent-actionable guidance: where to look, what gotchas to avoid, how to debug. Implementation prose lives in [docs/](docs/index.md) so it can be maintained alongside the RTL.
 
@@ -29,8 +29,8 @@ Before editing RTL, read the relevant topic doc — each calls out non-obvious b
 - [docs/pipeline.md](docs/pipeline.md) — FSM execution model, state transitions, memory access
 - [docs/decoder.md](docs/decoder.md) — decode, control signals, illegal-instruction detection
 - [docs/memory.md](docs/memory.md) — interface, `kv32_mem_fe` sub-word access, **misaligned-access state machine**
-- [docs/csr.md](docs/csr.md) — M-mode CSR file, address map, legality, MRET, counters
-- [docs/traps.md](docs/traps.md) — trap detection, PC redirect to mtvec, MRET, CSR write-gating loop avoidance
+- [docs/csr.md](docs/csr.md) — CSR file, M/S/U-mode CSRs, privilege-aware access control, delegation, counters
+- [docs/traps.md](docs/traps.md) — trap detection, delegation, vectored vectors, MRET/SRET, interrupt taking, privilege gating
 
 A few cross-cutting gotchas worth flagging up front:
 
@@ -38,6 +38,8 @@ A few cross-cutting gotchas worth flagging up front:
 - **CSR write gating deliberately omits `!trap_taken`** to avoid a combinational loop through `csr_illegal → trap_taken`. See [docs/traps.md](docs/traps.md#csr-write-gating).
 - **Misaligned-access `non_crossing_ma` is only the `SH@addr[1:0]=01` case** — the load-side shift assumes this. See [docs/memory.md](docs/memory.md#misalignment-detection).
 - **LR/SC/AMO use multi-phase MEM state** — AMO reads, computes, then writes; SC checks reservation before storing. See [docs/memory.md](docs/memory.md#lrsc-and-amo-operations-a-extension).
+- **Privilege mode transitions** — `priv_mode` updates on trap entry, MRET, and SRET. Trap delegation uses `medeleg`/`mideleg` to route to S-mode. See [docs/traps.md](docs/traps.md#trap-routing-and-delegation).
+- **Interrupt taking at ST_FETCH entry** — checked between instructions before fetch request is issued. `irq_pending` and `irq_cause` from CSR module. See [docs/traps.md](docs/traps.md#interrupt-taking-flow).
 
 ## Debugging Tips
 
@@ -47,6 +49,7 @@ Inspect Verilator internal signals via `rootp->` or add `printf` in `tb_core.cpp
 - Memory: `d_req`, `d_gnt`, `d_valid`, `d_addr`, `d_wdata`, `d_be`
 - Misaligned handler: `ma_state`, `ma_offset`, `ma_size`, `ma_first_rdata`
 - Control: `mem_read`, `mem_write`, `alu_op_valid`, `trap_taken`, `csr_illegal`
+- Privilege: `priv_mode`, `trap_to_smode`, `irq_pending`, `irq_cause`
 
 For test infrastructure details (BRAM model, `mem_responder`, `--latency`, `--binary`) see [docs/verification.md](docs/verification.md).
 
