@@ -266,7 +266,7 @@ Access gated by `mstatus.FS`. FS=Off causes illegal-instruction trap.
 The CPU core exposes **two independent memory ports** using a **req/gnt/ack**
 handshake: `imem_*` for instruction fetch and `dmem_*` for data load/store. The
 two ports share no internal resource — at SoC integration time an external
-crossbar or interconnect fabric arbitrates between them. In Phase 8, an AXI4
+crossbar or interconnect fabric arbitrates between them. In Phase 7, an AXI4
 adapter translates each port into a standard AXI4 master (§4.7).
 
 The data port is routed through `kv32_mem_fe` (`rtl/kv32_mem_fe.sv`), which owns
@@ -414,7 +414,7 @@ responsible for:
 ### 4.5 Address space
 
 The CPU drives 32-bit physical addresses on `mem_addr`. Address decoding is
-performed by the SoC's interconnect (Phase 8), not by the CPU. For compatibility
+performed by the SoC's interconnect (Phase 7), not by the CPU. For compatibility
 with standard RISC-V software, the SoC is expected to present the following layout:
 
 | Address range                | Typical use                            |
@@ -450,9 +450,9 @@ memory interface:
 
 All other addresses pass through to the external memory interface.
 
-### 4.7 Phase 8: AXI4 adapter
+### 4.7 Phase 7: AXI4 adapter
 
-In Phase 8 (SoC integration), an **AXI4 adapter module** translates each of the
+In Phase 7 (SoC integration), an **AXI4 adapter module** translates each of the
 two simple memory ports (§4.1) into a standard AXI4 master port. The two ports
 are typically adapted separately and merged by an AXI interconnect downstream,
 though a single adapter that muxes both into one AXI master is also acceptable
@@ -798,6 +798,6 @@ Implemented registers:
 4. **Phase 4 — A extension**: LR/SC with reservation register; AMO operations. `rv32ua` tests.
 5. **Phase 5 — Privilege** ✅: M/S/U modes with `priv_mode` register tracking current privilege. Extended `mstatus` (SIE, SPIE, SPP, SUM, MXR, TSR, TW, TVM). S-mode CSRs as restricted views of M-mode state (`sstatus`, `sie`, `sip`) plus independent S-mode trap CSRs (`stvec`, `sepc`, `scause`, `stval`, `sscratch`). Delegation via `medeleg`/`mideleg`. `mret`/`sret` with privilege restoration. `wfi`/`sfence.vma` with privilege gating. Vectored trap vectors (`mtvec`/`stvec` MODE=1). Asynchronous interrupt taking at ST_FETCH entry with priority (MEI>MSI>MTI>SEI>SSI>STI). U-mode counter access gated by `mcounteren`/`scounteren`. Boot a minimal S-mode payload.
 6. **Phase 6 — MMU (Sv32)**: page table walker, TLB, `satp`, `sfence.vma`. Run a paging S-mode test.
-7. **Phase 7 — F/D extension**: FPU pipeline, `mstatus.FS`, `fcsr`. `rv32uf` / `rv32ud` tests.
-8. **Phase 8 — AXI adapter + SoC integration**: add AXI4 adapter module (§4.7) to translate the simple memory interface into AXI4. Wrap the CPU in a SoC with AXI interconnect, main RAM (DDR/SRAM/HyperRAM), PLIC, UART. CLINT and boot ROM are already inside the core (§4.6). Verify with a bare-metal S-mode payload running over real peripherals.
+7. **Phase 7 — AXI adapter + SoC integration**: add AXI4 adapter module (§4.7) to translate the simple memory interface into AXI4. Wrap the CPU in a SoC with AXI interconnect, main RAM (DDR/SRAM/HyperRAM), PLIC, UART. CLINT and boot ROM are already inside the core (§4.6). Verify with a bare-metal S-mode payload running over real peripherals.
+8. **Phase 8 — F/D extension**: FPU pipeline, `mstatus.FS`, `fcsr`. `rv32uf` / `rv32ud` tests. (Deferred: Linux can emulate FP instructions in software, allowing earlier SoC bringup.)
 9. **Phase 9 — Linux boot**: integrate OpenSBI, build kernel + initramfs, bring up on FPGA. Success = shell prompt on UART.
