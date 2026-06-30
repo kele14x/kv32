@@ -1,8 +1,8 @@
-# kv32 — Minimal RV32GC Soft Core Specification
+# kv32 — Minimal RV32IMAC Soft Core Specification
 
 **Goal**: A synthesizable RISC-V core as simple as possible while still booting a Linux kernel + initramfs on an FPGA.
 
-**ISA**: RV32GC_Zicsr_Zifencei
+**ISA**: RV32IMAC_Zicsr_Zifencei
 
 ---
 
@@ -30,18 +30,7 @@ FETCH → DECODE → EXEC → MEM → WRITEBACK → FETCH → ...
 - Two read ports, one write port
 - Combinational read, synchronous write on rising edge during WRITEBACK state
 
-### 1.3 FPU (D extension)
-
-- Separate FPU pipeline, loosely coupled to EX stage
-- 32 × 32-bit FP registers (f0–f31); D extension treats them as 32×64-bit via register pairing
-- Support: FADD, FSUB, FMUL, FDIV, FSQRT, FCVT, FMIN/FMAX, FMADD/FMSUB/FNMADD/FNMSUB
-- Rounding modes: RNE, RTZ, RDN, RUP, RMM, dynamic (from frm CSR)
-- FCSR: `fflags` (NX/UF/OF/DZ/NV), `frm`, `fcsr` (combined)
-- Traps: invalid operation, divide-by-zero, overflow, underflow, inexact → set fflags, no trap by default
-
-**Note**: FPU is the single largest RTL block. Consider deferring if boot-time is acceptable with kernel FPU emulation (Linux can trap-and-emulate FP instructions).
-
-### 1.4 M Extension (Integer Multiply/Divide)
+### 1.3 M Extension (Integer Multiply/Divide)
 
 RV32M adds 8 instructions in two groups, all sharing `funct7 = 7'b0000001`:
 
@@ -79,7 +68,7 @@ ex_result = is_m_op   ? m_result    :
 
 **Gating**: M-unit activation is gated by `state == ST_EXEC` to prevent spurious starts.
 
-### 1.4.1 Multiplication semantics
+### 1.3.1 Multiplication semantics
 
 - **MUL**: returns the lower 32 bits of the 64-bit product. Identical for signed and unsigned inputs.
 - **MULH**: returns the upper 32 bits of `signed(rs1) × signed(rs2)`.
@@ -88,7 +77,7 @@ ex_result = is_m_op   ? m_result    :
 
 The full 64-bit product is computed internally; the `funct3` selects which half is written to `rd`.
 
-### 1.4.2 Division semantics
+### 1.3.2 Division semantics
 
 **Division by zero** (per RISC-V spec — no trap):
 
@@ -108,7 +97,7 @@ The full 64-bit product is computed internally; the `funct3` selects which half 
 
 Both special cases are detected combinationally at M-unit entry and resolved without running the iterative divider (0-cycle latency for these cases).
 
-### 1.4.3 Hardware implementation
+### 1.3.3 Hardware implementation
 
 **Multiplier**:
 
@@ -123,13 +112,13 @@ Both special cases are detected combinationally at M-unit entry and resolved wit
 - **Iterative non-restoring division**: 1 bit per cycle → 32 cycles + 1 cycle for sign correction (signed variants only) = 32–33 cycles total.
 - **Radix-4 variant** (optional): 2 bits per cycle → 16 cycles + 1 sign correction. More complex per-cycle logic but halves latency.
 - Default: radix-2 for simplicity; radix-4 can be added later if division latency is a bottleneck.
-- Division by zero and signed overflow (§1.4.2) are detected before the iterative loop starts and short-circuit to the result immediately.
+- Division by zero and signed overflow (§1.3.2) are detected before the iterative loop starts and short-circuit to the result immediately.
 
 **Signed magnitude conversion**: for signed DIV/REM, the operands are converted to magnitude (absolute value) before the unsigned divider, and the result signs are applied afterward:
 - Quotient sign = `rs1_sign XOR rs2_sign`
 - Remainder sign = `rs1_sign`
 
-### 1.5 A Extension (Atomic Instructions)
+### 1.4 A Extension (Atomic Instructions)
 
 RV32A adds atomic memory operations for multiprocessor synchronization:
 
@@ -194,8 +183,8 @@ Linux requires M, S, and U modes.
 
 | Address | Name       | Purpose                                                                          |
 | ------- | ---------- | -------------------------------------------------------------------------------- |
-| 0x300   | `mstatus`  | Machine status (MIE, MPIE, MPP, SIE, SPIE, SPP, MPRV, SUM, MXR, FS, etc.)        |
-| 0x301   | `misa`     | ISA description (read-only: MXL=1, IMAFDCSU bits)                                |
+| 0x300   | `mstatus`  | Machine status (MIE, MPIE, MPP, SIE, SPIE, SPP, MPRV, SUM, MXR, etc.)        |
+| 0x301   | `misa`     | ISA description (read-only: MXL=1, IMACSU bits)                                |
 | 0x304   | `mie`      | Machine interrupt enable                                                         |
 | 0x305   | `mtvec`    | Machine trap vector base + mode (direct/vectored)                                |
 | 0x340   | `mscratch` | Scratch for M-mode trap handler                                                  |
@@ -248,16 +237,6 @@ Reads to addresses 0xC01 / 0xC81 raise an illegal-instruction trap; M-mode
 firmware (OpenSBI) handles the trap by reading `mtime` from the CLINT over the
 AXI bus and writing the result into the trapped register. This keeps the CPU
 core free of any dependency on the CLINT's physical location or clock domain.
-
-### 3.4 FPU CSRs
-
-| Address   | Name       | Purpose                        |
-| --------- | ---------- | ------------------------------ |
-| 0x001     | `fflags`   | FP accrued exception flags     |
-| 0x002     | `frm`      | FP rounding mode               |
-| 0x003     | `fcsr`     | Combined fflags + frm          |
-
-Access gated by `mstatus.FS`. FS=Off causes illegal-instruction trap.
 
 ---
 
@@ -782,7 +761,7 @@ Implemented registers:
 
 ## 13. Verification Strategy
 
-1. **Unit tests**: each functional unit (ALU, branch, CSR, multiplier, divider, FPU) with directed test vectors.
+1. **Unit tests**: each functional unit (ALU, branch, CSR, multiplier, divider) with directed test vectors.
 2. **riscv-tests**: official ISA test suite (M-mode flat binaries) — validates base ISA + extensions.
 3. **riscv-arch-test**: compliance tests from RISC-V International.
 4. **Co-simulation**: compare RTL trace against Spike or QEMU instruction-by-instruction.
@@ -793,11 +772,16 @@ Implemented registers:
 ## 14. Implementation Order
 
 1. **Phase 1 — RV32I base**: Multi-cycle FSM datapath (FETCH/DECODE/EXEC/MEM/WRITEBACK states), register file, ALU, branch, load/store, CSR file (M-mode only), dual `imem_*`/`dmem_*` memory ports with `kv32_mem_fe` handling sub-word and misaligned data access (§4). Run `riscv-tests` M-mode binaries.
-2. **Phase 2 — M extension** (`kv32_m_unit`): multiplier (FPGA DSP-inferred, 2–3 cycles) and iterative divider (radix-2, 32–33 cycles). Integrates by holding the FSM in EXEC state while `m_busy` — no new states or forwarding paths needed (§1.4). Verify with `rv32mi` tests.
+2. **Phase 2 — M extension** (`kv32_m_unit`): multiplier (FPGA DSP-inferred, 2–3 cycles) and iterative divider (radix-2, 32–33 cycles). Integrates by holding the FSM in EXEC state while `m_busy` — no new states or forwarding paths needed (§1.3). Verify with `rv32mi` tests.
 3. **Phase 3 — C extension**: instruction decompressor (16-bit → 32-bit) at IF output. Verify with `rv32uc`.
 4. **Phase 4 — A extension**: LR/SC with reservation register; AMO operations. `rv32ua` tests.
 5. **Phase 5 — Privilege** ✅: M/S/U modes with `priv_mode` register tracking current privilege. Extended `mstatus` (SIE, SPIE, SPP, SUM, MXR, TSR, TW, TVM). S-mode CSRs as restricted views of M-mode state (`sstatus`, `sie`, `sip`) plus independent S-mode trap CSRs (`stvec`, `sepc`, `scause`, `stval`, `sscratch`). Delegation via `medeleg`/`mideleg`. `mret`/`sret` with privilege restoration. `wfi`/`sfence.vma` with privilege gating. Vectored trap vectors (`mtvec`/`stvec` MODE=1). Asynchronous interrupt taking at ST_FETCH entry with priority (MEI>MSI>MTI>SEI>SSI>STI). U-mode counter access gated by `mcounteren`/`scounteren`. Boot a minimal S-mode payload.
 6. **Phase 6 — MMU (Sv32)**: page table walker, TLB, `satp`, `sfence.vma`. Run a paging S-mode test.
 7. **Phase 7 — AXI adapter + SoC integration**: add AXI4 adapter module (§4.7) to translate the simple memory interface into AXI4. Wrap the CPU in a SoC with AXI interconnect, main RAM (DDR/SRAM/HyperRAM), PLIC, UART. CLINT and boot ROM are already inside the core (§4.6). Verify with a bare-metal S-mode payload running over real peripherals.
-8. **Phase 8 — F/D extension**: FPU pipeline, `mstatus.FS`, `fcsr`. `rv32uf` / `rv32ud` tests. (Deferred: Linux can emulate FP instructions in software, allowing earlier SoC bringup.)
-9. **Phase 9 — Linux boot**: integrate OpenSBI, build kernel + initramfs, bring up on FPGA. Success = shell prompt on UART.
+8. **Phase 8 — Linux boot**: integrate OpenSBI, build kernel + initramfs, bring up on FPGA. Success = shell prompt on UART.
+
+---
+
+## 15. Future Work
+
+- **F/D extension (floating-point)**: FPU pipeline, `mstatus.FS`, `fcsr`. Would enable hardware FP for Linux userspace. Not required for Linux boot — the kernel can trap-and-emulate FP instructions. If added later, `rv32uf` / `rv32ud` tests would verify correctness.

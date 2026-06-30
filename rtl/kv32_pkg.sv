@@ -1,19 +1,5 @@
 package kv32_pkg;
 
-  typedef struct packed {
-    logic [31:0] addr;
-    logic        we;
-    logic [1:0]  size;
-    logic [31:0] wdata;
-    logic [3:0]  be;
-    logic        excl;
-  } mem_req_t;
-
-  typedef struct packed {
-    logic [31:0] rdata;
-    logic        err;
-  } mem_resp_t;
-
   // ALU operation encoding
   localparam logic [3:0] AluAdd  = 4'h0,
                        AluSub  = 4'h1,
@@ -65,7 +51,10 @@ package kv32_pkg;
   localparam logic [11:0] CsrInstret = 12'hC02;
   localparam logic [11:0] CsrInstreth = 12'hC82;
 
-  // Exception cause codes (Phase 6: page faults)
+  // Exception cause codes (Phase 6: page faults, access faults)
+  localparam logic [31:0] EXC_INSTR_ACCESS_FAULT = 32'd1;
+  localparam logic [31:0] EXC_LOAD_ACCESS_FAULT = 32'd5;
+  localparam logic [31:0] EXC_STORE_ACCESS_FAULT = 32'd7;
   localparam logic [31:0] EXC_INSTR_PAGE_FAULT = 32'd12;
   localparam logic [31:0] EXC_LOAD_PAGE_FAULT = 32'd13;
   localparam logic [31:0] EXC_STORE_PAGE_FAULT = 32'd15;

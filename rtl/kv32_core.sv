@@ -106,7 +106,7 @@ module kv32_core
   // Phase 6: translate instruction address (use physical PPN from MMU or pass-through)
   // Note: Sv32 produces 34-bit physical addresses (22-bit PPN + 12-bit offset).
   // We use only PPN[19:0] since our memory interface is 32-bit. If PPN[21:20] != 0,
-  // the access would be above 4GB and should fault (TODO: add access fault check).
+  // mmu_i_above_4g fires and an access fault is raised (see trap detection below).
   assign fetch_phys_addr = mmu_i_tlb_hit ? {mmu_i_phys_ppn[19:0], pc_reg[11:0]} : fetch_addr;
 
   // ===========================================================================
@@ -117,8 +117,8 @@ module kv32_core
   logic i_err;
   // verilator lint_on UNUSEDSIGNAL
 
-  // Phase 6: gate fetch on translation readiness and no page fault
-  assign imem_req   = (state == ST_FETCH) && fetch_req && !fetch_wait && i_translated && !mmu_i_page_fault;
+  // Phase 6: gate fetch on translation readiness, no page fault, no above-4G fault
+  assign imem_req   = (state == ST_FETCH) && fetch_req && !fetch_wait && i_translated && !mmu_i_page_fault && !mmu_i_above_4g;
   assign imem_addr = fetch_phys_addr;
   assign imem_we = 1'b0;
   assign imem_size = 2'b10;  // always word
@@ -580,6 +580,11 @@ module kv32_core
         trap_taken = 1'b1;
         trap_cause = mem_write_id ? 32'd7 : 32'd5;  // Store / Load access fault
         trap_val   = ex_result_reg;  // Faulting address
+      end  // Phase 6: above-4G physical address (PPN[21:20] != 0)
+      else if (!mmu_bypass && mmu_d_above_4g) begin
+        trap_taken = 1'b1;
+        trap_cause = mem_write_id ? EXC_STORE_ACCESS_FAULT : EXC_LOAD_ACCESS_FAULT;
+        trap_val   = ex_result_reg;  // Faulting virtual address
       end  // Phase 6: data page fault (from MMU TLB lookup)
       else if (!mmu_bypass && mmu_d_page_fault) begin
         trap_taken = 1'b1;
@@ -587,8 +592,13 @@ module kv32_core
         trap_val   = ex_result_reg;  // Faulting virtual address
       end
     end else if (state == ST_FETCH) begin
-      // Phase 6: instruction page fault (from MMU TLB lookup)
-      if (!mmu_bypass && mmu_i_page_fault) begin
+      // Phase 6: above-4G physical address (PPN[21:20] != 0)
+      if (!mmu_bypass && mmu_i_above_4g) begin
+        trap_taken = 1'b1;
+        trap_cause = EXC_INSTR_ACCESS_FAULT;
+        trap_val   = pc_reg;  // Faulting virtual PC
+      end  // Phase 6: instruction page fault (from MMU TLB lookup)
+      else if (!mmu_bypass && mmu_i_page_fault) begin
         trap_taken = 1'b1;
         trap_cause = EXC_INSTR_PAGE_FAULT;
         trap_val   = pc_reg;  // Faulting virtual PC
@@ -742,15 +752,16 @@ module kv32_core
 
   // Phase 6: translated data address (use physical PPN from MMU or pass-through)
   // Note: Sv32 produces 34-bit physical addresses. We use only PPN[19:0] since
-  // our memory interface is 32-bit. Accesses above 4GB should fault.
+  // our memory interface is 32-bit. If PPN[21:20] != 0, mmu_d_above_4g fires
+  // and an access fault is raised (see trap detection below).
   logic [31:0] d_addr_translated;
   assign d_addr_translated = mmu_d_tlb_hit
                            ? {mmu_d_phys_ppn[19:0], ex_result_reg[11:0]}
                            : ex_result_reg;
 
-  // Phase 6: gate data access on translation readiness and no page fault
+  // Phase 6: gate data access on translation readiness, no page fault, no above-4G fault
   logic d_access_ok;
-  assign d_access_ok = d_translated && !mmu_d_page_fault;
+  assign d_access_ok = d_translated && !mmu_d_page_fault && !mmu_d_above_4g;
 
   always_comb begin
     if (state == ST_MEM) begin
@@ -889,12 +900,19 @@ module kv32_core
 
   // MMU internal signals
   /* verilator lint_off UNUSEDSIGNAL */
-  logic [21:0] mmu_i_phys_ppn;  // [21:20] unused: 32-bit memory truncates high bits
+  logic [21:0] mmu_i_phys_ppn;
   logic        mmu_i_tlb_hit;
   logic        mmu_i_page_fault;
-  logic [21:0] mmu_d_phys_ppn;  // [21:20] unused: 32-bit memory truncates high bits
+  logic [21:0] mmu_d_phys_ppn;
   logic        mmu_d_tlb_hit;
   logic        mmu_d_page_fault;
+  // Phase 6: Sv32 produces 34-bit physical addresses (22-bit PPN + 12-bit offset).
+  // PPN[21:20] != 0 means the physical address is above 4GB, which our 32-bit
+  // memory interface cannot represent — raise an access fault.
+  logic mmu_i_above_4g;
+  logic mmu_d_above_4g;
+  assign mmu_i_above_4g = mmu_i_tlb_hit && |mmu_i_phys_ppn[21:20];
+  assign mmu_d_above_4g = mmu_d_tlb_hit && |mmu_d_phys_ppn[21:20];
   logic        mmu_ptw_start;
   logic [19:0] mmu_walk_vpn;
   logic [ 1:0] mmu_walk_access_type;
@@ -1008,6 +1026,14 @@ module kv32_core
             fetch_req  <= 1'b1;
             fetch_wait <= 1'b0;
             // Stay in ST_FETCH to begin fetching from trap vector
+          end else if (!mmu_bypass && mmu_i_above_4g) begin
+            // Phase 6: Above-4G physical address — access fault
+            trap_from_mem <= 1'b1;
+            pc_reg        <= trap_vector_pc;
+            priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
+            fetch_req     <= 1'b1;
+            fetch_wait    <= 1'b0;
+            state         <= ST_FETCH;
           end else if (!mmu_bypass && mmu_i_page_fault) begin
             // Phase 6: Instruction page fault — take trap immediately
             // (trap detection logic will set trap_cause = 12)
@@ -1125,8 +1151,16 @@ module kv32_core
         end
 
         ST_MEM: begin
-          // Phase 6: Check for data page fault or TLB miss
-          if (!mmu_bypass && mmu_d_page_fault) begin
+          // Phase 6: Check for above-4G fault, data page fault, or TLB miss
+          if (!mmu_bypass && mmu_d_above_4g) begin
+            // Above-4G physical address — access fault
+            trap_from_mem <= 1'b1;
+            pc_reg        <= trap_vector_pc;
+            priv_mode     <= trap_to_smode ? PRIV_S : PRIV_M;
+            fetch_req     <= 1'b1;
+            fetch_wait    <= 1'b0;
+            state         <= ST_FETCH;
+          end else if (!mmu_bypass && mmu_d_page_fault) begin
             // Data page fault — take trap immediately
             trap_from_mem <= 1'b1;
             pc_reg        <= trap_vector_pc;

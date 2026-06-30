@@ -1,6 +1,6 @@
 # Code Review: Outstanding Items
 
-Last updated: 2026-06-26 (post-FSM conversion)
+Last updated: 2026-06-27
 
 All 50 riscv-tests passing (42 rv32ui + 8 rv32um), clean lint.
 
@@ -23,6 +23,7 @@ The following items from the original pipeline-based review are no longer applic
 | H2 | ECALL `mtval` contradicts SPEC | Updated SPEC.md line 534 to state "0" (matching RISC-V spec and implementation) |
 | H4 | `imem_req` gating diverges from docs | Updated docs/memory.md to include `fetch_req` in the gating expression |
 | H5 | FSM state name mismatch (`MA_BETWEEN` vs `MA_SECOND_REQ`) | Updated tb_mem_fe.cpp comments to use RTL state names |
+| M2 | Unused `mem_req_t`/`mem_resp_t` structs | Removed from `kv32_pkg.sv` — incomplete (missing req/gnt/ack), and bundling fights the signal-muxing architecture |
 
 ## Outstanding High Priority
 
@@ -34,13 +35,6 @@ JAL sets `branch_target = pc_ex + imm_ex` without misalignment check. No mcause=
 **Status**: Deferred to Phase 3 (C extension work). Trap infrastructure should be designed as part of that phase.
 
 ## Outstanding Medium Priority
-
-### M2. Unused struct types in kv32_pkg.sv
-**File**: `rtl/kv32_pkg.sv:3-15` (`mem_req_t`, `mem_resp_t`)
-
-Two memory interface struct types defined but never instantiated. Core and mem_fe pass individual signals. Dead code adding maintenance burden.
-
-**Fix**: Either remove structs or refactor memory interfaces to use them. Struct approach would be cleaner for future phases.
 
 ### M6. Repetitive OpReg decoder logic
 **File**: `rtl/kv32_decoder.sv:213-280`
