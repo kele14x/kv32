@@ -909,8 +909,8 @@ module kv32_core
   // Phase 6: Sv32 produces 34-bit physical addresses (22-bit PPN + 12-bit offset).
   // PPN[21:20] != 0 means the physical address is above 4GB, which our 32-bit
   // memory interface cannot represent — raise an access fault.
-  logic mmu_i_above_4g;
-  logic mmu_d_above_4g;
+  logic        mmu_i_above_4g;
+  logic        mmu_d_above_4g;
   assign mmu_i_above_4g = mmu_i_tlb_hit && |mmu_i_phys_ppn[21:20];
   assign mmu_d_above_4g = mmu_d_tlb_hit && |mmu_d_phys_ppn[21:20];
   logic        mmu_ptw_start;

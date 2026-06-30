@@ -134,18 +134,18 @@ module kv32_csr
   // -------------------------------------------------------------------------
 
   // mstatus fields (all stored as individual bits for field-level masking)
-  logic        mstatus_sie;  // [1]  S-mode interrupt enable
+  logic mstatus_sie;  // [1]  S-mode interrupt enable
   // mstatus_mie is already declared as output port [3]
-  logic        mstatus_spie;  // [5]  S-mode previous interrupt enable
-  logic        mstatus_mpie;  // [7]  M-mode previous interrupt enable
-  logic        mstatus_spp;  // [8]  S-mode previous privilege (1 bit)
-  logic [ 1:0] mstatus_mpp;  // [12:11] M-mode previous privilege
-  logic        mstatus_mprv_r;  // [17] modify privilege (data access mode)
-  logic        mstatus_sum;  // [18] supervisor user memory access
-  logic        mstatus_mxr;  // [19] make executable readable
-  logic        mstatus_tvm_r;  // [20] trap virtual memory (satp/SFENCE.VMA)
-  logic        mstatus_tw_r;  // [21] timeout WFI
-  logic        mstatus_tsr_r;  // [22] trap SRET from S-mode
+  logic mstatus_spie;  // [5]  S-mode previous interrupt enable
+  logic mstatus_mpie;  // [7]  M-mode previous interrupt enable
+  logic mstatus_spp;  // [8]  S-mode previous privilege (1 bit)
+  logic [1:0] mstatus_mpp;  // [12:11] M-mode previous privilege
+  logic mstatus_mprv_r;  // [17] modify privilege (data access mode)
+  logic mstatus_sum;  // [18] supervisor user memory access
+  logic mstatus_mxr;  // [19] make executable readable
+  logic mstatus_tvm_r;  // [20] trap virtual memory (satp/SFENCE.VMA)
+  logic mstatus_tw_r;  // [21] timeout WFI
+  logic mstatus_tsr_r;  // [22] trap SRET from S-mode
 
   // M-mode trap CSRs
   logic [31:0] mie_r;
@@ -158,8 +158,8 @@ module kv32_csr
   logic [31:0] mtval_r;
 
   // PMP configuration (16 entries)
-  logic [ 7:0] pmpcfg_r [16];   // pmpcfg0-3: 4 entries per register, 8 bits each
-  logic [31:0] pmpaddr_r [16];  // pmpaddr0-15: physical address >> 2
+  logic [7:0] pmpcfg_r[16];  // pmpcfg0-3: 4 entries per register, 8 bits each
+  logic [31:0] pmpaddr_r[16];  // pmpaddr0-15: physical address >> 2
 
   // S-mode trap CSRs (independent registers)
   logic [31:0] stvec_r;
@@ -177,13 +177,13 @@ module kv32_csr
   logic [31:0] satp_r;
 
   // mip: SSIP (bit 1) is software-writable
-  logic        mip_ssip;
+  logic mip_ssip;
 
   // 64-bit cycle counter
   logic [63:0] mcycle_r;
   // 64-bit instret counter
   logic [63:0] minstret_r;
-  logic        minstret_written_last_cycle;  // Suppress increment after write
+  logic minstret_written_last_cycle;  // Suppress increment after write
 
   // -------------------------------------------------------------------------
   // Reconstructed CSR read values
@@ -361,26 +361,26 @@ module kv32_csr
   always_comb begin
     unique case (csr_addr)
       // M-mode CSRs
-      CsrMstatus:    csr_rdata = mstatus_rval;
-      CsrMisa:       csr_rdata = MisaVal;
-      CsrMie:        csr_rdata = mie_r;
-      CsrMtvec:      csr_rdata = mtvec_r;
-      CsrMcounteren: csr_rdata = mcounteren_r;
+      CsrMstatus:       csr_rdata = mstatus_rval;
+      CsrMisa:          csr_rdata = MisaVal;
+      CsrMie:           csr_rdata = mie_r;
+      CsrMtvec:         csr_rdata = mtvec_r;
+      CsrMcounteren:    csr_rdata = mcounteren_r;
       CsrMcountinhibit: csr_rdata = mcountinhibit_r;
-      CsrMstatush:   csr_rdata = 32'h0;  // No big-endian support
-      CsrMscratch:   csr_rdata = mscratch_r;
-      CsrMepc:       csr_rdata = mepc_r;
-      CsrMcause:     csr_rdata = mcause_r;
-      CsrMtval:      csr_rdata = mtval_r;
-      CsrMip:        csr_rdata = mip_rval;
-      CsrMedeleg:    csr_rdata = medeleg_r;
-      CsrMideleg:    csr_rdata = mideleg_r;
+      CsrMstatush:      csr_rdata = 32'h0;  // No big-endian support
+      CsrMscratch:      csr_rdata = mscratch_r;
+      CsrMepc:          csr_rdata = mepc_r;
+      CsrMcause:        csr_rdata = mcause_r;
+      CsrMtval:         csr_rdata = mtval_r;
+      CsrMip:           csr_rdata = mip_rval;
+      CsrMedeleg:       csr_rdata = medeleg_r;
+      CsrMideleg:       csr_rdata = mideleg_r;
 
       // PMP configuration (4 registers, 4 entries per register)
-      CsrPmpcfg0:  csr_rdata = {pmpcfg_r[3], pmpcfg_r[2], pmpcfg_r[1], pmpcfg_r[0]};
-      CsrPmpcfg1:  csr_rdata = {pmpcfg_r[7], pmpcfg_r[6], pmpcfg_r[5], pmpcfg_r[4]};
-      CsrPmpcfg2:  csr_rdata = {pmpcfg_r[11], pmpcfg_r[10], pmpcfg_r[9], pmpcfg_r[8]};
-      CsrPmpcfg3:  csr_rdata = {pmpcfg_r[15], pmpcfg_r[14], pmpcfg_r[13], pmpcfg_r[12]};
+      CsrPmpcfg0:   csr_rdata = {pmpcfg_r[3], pmpcfg_r[2], pmpcfg_r[1], pmpcfg_r[0]};
+      CsrPmpcfg1:   csr_rdata = {pmpcfg_r[7], pmpcfg_r[6], pmpcfg_r[5], pmpcfg_r[4]};
+      CsrPmpcfg2:   csr_rdata = {pmpcfg_r[11], pmpcfg_r[10], pmpcfg_r[9], pmpcfg_r[8]};
+      CsrPmpcfg3:   csr_rdata = {pmpcfg_r[15], pmpcfg_r[14], pmpcfg_r[13], pmpcfg_r[12]};
       CsrPmpaddr0:  csr_rdata = pmpaddr_r[0];
       CsrPmpaddr1:  csr_rdata = pmpaddr_r[1];
       CsrPmpaddr2:  csr_rdata = pmpaddr_r[2];
@@ -459,38 +459,38 @@ module kv32_csr
     logic [31:0] newv;
     /* verilator lint_on UNUSEDSIGNAL */
     if (!rst_n) begin
-      mstatus_sie    <= 1'b0;
-      mstatus_mie    <= 1'b0;
-      mstatus_spie   <= 1'b0;
-      mstatus_mpie   <= 1'b0;
-      mstatus_spp    <= 1'b0;
-      mstatus_mpp    <= 2'b11;
-      mstatus_mprv_r <= 1'b0;
-      mstatus_sum    <= 1'b0;
-      mstatus_mxr    <= 1'b0;
-      mstatus_tvm_r  <= 1'b0;
-      mstatus_tw_r   <= 1'b0;
-      mstatus_tsr_r  <= 1'b0;
-      mie_r          <= 32'h0;
-      mtvec_r        <= 32'h0;
-      mcounteren_r   <= 32'h0;
-      mcountinhibit_r <= 32'h0;
-      mscratch_r     <= 32'h0;
-      mepc_r         <= 32'h0;
-      mcause_r       <= 32'h0;
-      mtval_r        <= 32'h0;
-      stvec_r        <= 32'h0;
-      sscratch_r     <= 32'h0;
-      sepc_r         <= 32'h0;
-      scause_r       <= 32'h0;
-      stval_r        <= 32'h0;
-      scounteren_r   <= 32'h0;
-      medeleg_r      <= 32'h0;
-      mideleg_r      <= 32'h0;
-      satp_r         <= 32'h0;
-      mip_ssip       <= 1'b0;
-      mcycle_r       <= 64'h0;
-      minstret_r     <= 64'h0;
+      mstatus_sie                 <= 1'b0;
+      mstatus_mie                 <= 1'b0;
+      mstatus_spie                <= 1'b0;
+      mstatus_mpie                <= 1'b0;
+      mstatus_spp                 <= 1'b0;
+      mstatus_mpp                 <= 2'b11;
+      mstatus_mprv_r              <= 1'b0;
+      mstatus_sum                 <= 1'b0;
+      mstatus_mxr                 <= 1'b0;
+      mstatus_tvm_r               <= 1'b0;
+      mstatus_tw_r                <= 1'b0;
+      mstatus_tsr_r               <= 1'b0;
+      mie_r                       <= 32'h0;
+      mtvec_r                     <= 32'h0;
+      mcounteren_r                <= 32'h0;
+      mcountinhibit_r             <= 32'h0;
+      mscratch_r                  <= 32'h0;
+      mepc_r                      <= 32'h0;
+      mcause_r                    <= 32'h0;
+      mtval_r                     <= 32'h0;
+      stvec_r                     <= 32'h0;
+      sscratch_r                  <= 32'h0;
+      sepc_r                      <= 32'h0;
+      scause_r                    <= 32'h0;
+      stval_r                     <= 32'h0;
+      scounteren_r                <= 32'h0;
+      medeleg_r                   <= 32'h0;
+      mideleg_r                   <= 32'h0;
+      satp_r                      <= 32'h0;
+      mip_ssip                    <= 1'b0;
+      mcycle_r                    <= 64'h0;
+      minstret_r                  <= 64'h0;
       minstret_written_last_cycle <= 1'b0;
       for (int i = 0; i < 16; i++) begin
         pmpcfg_r[i]  <= 8'h0;
@@ -701,7 +701,8 @@ module kv32_csr
           // --- PMP configuration (4 registers, 4 entries per register) ---
           CsrPmpcfg0: begin
             /* verilator lint_off BLKSEQ */
-            newv = csr_new_val({pmpcfg_r[3], pmpcfg_r[2], pmpcfg_r[1], pmpcfg_r[0]}, csr_op, csr_wdata);
+            newv = csr_new_val({pmpcfg_r[3], pmpcfg_r[2], pmpcfg_r[1], pmpcfg_r[0]}, csr_op,
+                               csr_wdata);
             /* verilator lint_on BLKSEQ */
             pmpcfg_r[0] <= newv[7:0];
             pmpcfg_r[1] <= newv[15:8];
@@ -710,7 +711,8 @@ module kv32_csr
           end
           CsrPmpcfg1: begin
             /* verilator lint_off BLKSEQ */
-            newv = csr_new_val({pmpcfg_r[7], pmpcfg_r[6], pmpcfg_r[5], pmpcfg_r[4]}, csr_op, csr_wdata);
+            newv = csr_new_val({pmpcfg_r[7], pmpcfg_r[6], pmpcfg_r[5], pmpcfg_r[4]}, csr_op,
+                               csr_wdata);
             /* verilator lint_on BLKSEQ */
             pmpcfg_r[4] <= newv[7:0];
             pmpcfg_r[5] <= newv[15:8];
@@ -719,7 +721,8 @@ module kv32_csr
           end
           CsrPmpcfg2: begin
             /* verilator lint_off BLKSEQ */
-            newv = csr_new_val({pmpcfg_r[11], pmpcfg_r[10], pmpcfg_r[9], pmpcfg_r[8]}, csr_op, csr_wdata);
+            newv = csr_new_val({pmpcfg_r[11], pmpcfg_r[10], pmpcfg_r[9], pmpcfg_r[8]}, csr_op,
+                               csr_wdata);
             /* verilator lint_on BLKSEQ */
             pmpcfg_r[8]  <= newv[7:0];
             pmpcfg_r[9]  <= newv[15:8];
@@ -728,7 +731,8 @@ module kv32_csr
           end
           CsrPmpcfg3: begin
             /* verilator lint_off BLKSEQ */
-            newv = csr_new_val({pmpcfg_r[15], pmpcfg_r[14], pmpcfg_r[13], pmpcfg_r[12]}, csr_op, csr_wdata);
+            newv = csr_new_val({pmpcfg_r[15], pmpcfg_r[14], pmpcfg_r[13], pmpcfg_r[12]}, csr_op,
+                               csr_wdata);
             /* verilator lint_on BLKSEQ */
             pmpcfg_r[12] <= newv[7:0];
             pmpcfg_r[13] <= newv[15:8];
@@ -737,16 +741,16 @@ module kv32_csr
           end
 
           // --- PMP addresses (16 registers) ---
-          CsrPmpaddr0:  pmpaddr_r[0]  <= csr_new_val(pmpaddr_r[0], csr_op, csr_wdata);
-          CsrPmpaddr1:  pmpaddr_r[1]  <= csr_new_val(pmpaddr_r[1], csr_op, csr_wdata);
-          CsrPmpaddr2:  pmpaddr_r[2]  <= csr_new_val(pmpaddr_r[2], csr_op, csr_wdata);
-          CsrPmpaddr3:  pmpaddr_r[3]  <= csr_new_val(pmpaddr_r[3], csr_op, csr_wdata);
-          CsrPmpaddr4:  pmpaddr_r[4]  <= csr_new_val(pmpaddr_r[4], csr_op, csr_wdata);
-          CsrPmpaddr5:  pmpaddr_r[5]  <= csr_new_val(pmpaddr_r[5], csr_op, csr_wdata);
-          CsrPmpaddr6:  pmpaddr_r[6]  <= csr_new_val(pmpaddr_r[6], csr_op, csr_wdata);
-          CsrPmpaddr7:  pmpaddr_r[7]  <= csr_new_val(pmpaddr_r[7], csr_op, csr_wdata);
-          CsrPmpaddr8:  pmpaddr_r[8]  <= csr_new_val(pmpaddr_r[8], csr_op, csr_wdata);
-          CsrPmpaddr9:  pmpaddr_r[9]  <= csr_new_val(pmpaddr_r[9], csr_op, csr_wdata);
+          CsrPmpaddr0:  pmpaddr_r[0] <= csr_new_val(pmpaddr_r[0], csr_op, csr_wdata);
+          CsrPmpaddr1:  pmpaddr_r[1] <= csr_new_val(pmpaddr_r[1], csr_op, csr_wdata);
+          CsrPmpaddr2:  pmpaddr_r[2] <= csr_new_val(pmpaddr_r[2], csr_op, csr_wdata);
+          CsrPmpaddr3:  pmpaddr_r[3] <= csr_new_val(pmpaddr_r[3], csr_op, csr_wdata);
+          CsrPmpaddr4:  pmpaddr_r[4] <= csr_new_val(pmpaddr_r[4], csr_op, csr_wdata);
+          CsrPmpaddr5:  pmpaddr_r[5] <= csr_new_val(pmpaddr_r[5], csr_op, csr_wdata);
+          CsrPmpaddr6:  pmpaddr_r[6] <= csr_new_val(pmpaddr_r[6], csr_op, csr_wdata);
+          CsrPmpaddr7:  pmpaddr_r[7] <= csr_new_val(pmpaddr_r[7], csr_op, csr_wdata);
+          CsrPmpaddr8:  pmpaddr_r[8] <= csr_new_val(pmpaddr_r[8], csr_op, csr_wdata);
+          CsrPmpaddr9:  pmpaddr_r[9] <= csr_new_val(pmpaddr_r[9], csr_op, csr_wdata);
           CsrPmpaddr10: pmpaddr_r[10] <= csr_new_val(pmpaddr_r[10], csr_op, csr_wdata);
           CsrPmpaddr11: pmpaddr_r[11] <= csr_new_val(pmpaddr_r[11], csr_op, csr_wdata);
           CsrPmpaddr12: pmpaddr_r[12] <= csr_new_val(pmpaddr_r[12], csr_op, csr_wdata);

@@ -243,71 +243,30 @@ module kv32_decoder
           is_m_mul = ~funct3[2];  // funct3[2]==0: multiply
           is_m_div = funct3[2];  // funct3[2]==1: divide
         end else begin
-          alu_op_valid = 1'b1;
+          // OpReg: funct7 determines legality and ADD/SUB, SRL/SRA variants
+          logic funct7_base;
+          logic funct7_sub;
+          logic funct7_ok;
+          funct7_base = (funct7 == 7'b0000000);
+          funct7_sub  = (funct7 == 7'b0100000);
+          funct7_ok   = funct7_base || (funct7_sub && (funct3 == 3'b000 || funct3 == 3'b101));
 
-          unique case (funct3)
-            3'b000: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluAdd;  // ADD
-              end else if (funct7 == 7'b0100000) begin
-                alu_op = AluSub;  // SUB
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b001: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluSll;  // SLL
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b010: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluSlt;  // SLT
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b011: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluSltu;  // SLTU
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b100: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluXor;  // XOR
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b101: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluSrl;  // SRL
-              end else if (funct7 == 7'b0100000) begin
-                alu_op = AluSra;  // SRA
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b110: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluOr;  // OR
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            3'b111: begin
-              if (funct7 == 7'b0000000) begin
-                alu_op = AluAnd;  // AND
-              end else begin
-                illegal = 1'b1;
-              end
-            end
-            default: illegal = 1'b1;
-          endcase
+          if (!funct7_ok) begin
+            illegal = 1'b1;
+          end else begin
+            alu_op_valid = 1'b1;
+            unique case (funct3)
+              3'b000:  alu_op = funct7_sub ? AluSub : AluAdd;
+              3'b001:  alu_op = AluSll;
+              3'b010:  alu_op = AluSlt;
+              3'b011:  alu_op = AluSltu;
+              3'b100:  alu_op = AluXor;
+              3'b101:  alu_op = funct7_sub ? AluSra : AluSrl;
+              3'b110:  alu_op = AluOr;
+              3'b111:  alu_op = AluAnd;
+              default: illegal = 1'b1;
+            endcase
+          end
         end
       end
 
