@@ -1,49 +1,50 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Agent-facing operating manual for the kv32 repository. Provides guidance to Claude Code (claude.ai/code) and human contributors alike.
 
-- **Architectural spec** (execution model, CSR map, memory interface, privilege modes, MMU, boot flow): [SPEC.md](SPEC.md)
-- **Build commands and user-facing usage**: [README.md](README.md)
-- **Implementation details by topic** (with RTL file references): [docs/index.md](docs/index.md)
+- **Architectural spec**: [docs/spec/](docs/spec/index.md)
+- **Implementation notes**: [docs/impl/](docs/index.md)
+- **Verification**: [docs/verification/](docs/verification/strategy.md)
+- **Build and usage**: [README.md](README.md)
+- **Roadmap**: [docs/project/roadmap.md](docs/project/roadmap.md)
 
-## Project Overview
+## Project overview
 
-kv32 is a minimal RISC-V RV32IMAC soft core in SystemVerilog, targeting Linux boot on an FPGA. Multi-cycle state machine (FETCH/DECODE/EXEC/MEM/WRITEBACK) executing one instruction at a time. Phase 5 (RV32IMAC + M/S/U privilege modes) is complete.
+kv32 is a minimal RISC-V RV32IMAC soft core in SystemVerilog, targeting Linux boot on an FPGA. Multi-cycle FSM (FETCH/DECODE/EXEC/MEM/WRITEBACK), single-issue, in-order, no forwarding. Phase 5 (RV32IMAC + M/S/U privilege modes) complete; Phase 6 (Sv32 MMU) in progress.
 
-**Canonical spec**: SPEC.md is the single source of truth for architectural decisions. CLAUDE.md supplements it with agent-actionable guidance: where to look, what gotchas to avoid, how to debug. Implementation prose lives in [docs/](docs/index.md) so it can be maintained alongside the RTL.
+## Before every RTL change
 
-## Build and Test
+1. Read the relevant spec file under [docs/spec/](docs/spec/index.md) and the matching implementation note under [docs/impl/](docs/index.md).
+2. `make lint` — Verilator catches most errors before simulation.
+3. `make format` — runs `verible-verilog-format` on `rtl/*.sv`. Both enforces style and doubles as a syntax check. Use `make format-check` to detect drift; override the binary with `make format VERIBLE_FORMAT=/path/to/verible-verilog-format` (default `~/tools/verible/bin/verible-verilog-format`).
+4. `make unit-tests` — catches module-boundary bugs before integration.
+5. Where relevant, extend `tb/tb_<module>.sv` and update the coverage matrix in [docs/verification/unit-tests.md](docs/verification/unit-tests.md).
 
-**Always run `make lint` first** after any RTL change. Verilator catches most errors before simulation.
+For the full command list see [README.md](README.md#building-and-running).
 
-**Run `make format` after editing RTL files.** This runs `verible-verilog-format` in-place on `rtl/*.sv`, which both enforces a consistent style and acts as a secondary syntax check (verible parses the source, so malformed SV will fail to format). Verify with `make format-check` if you only want to detect drift. Override the formatter path with `make format VERIBLE_FORMAT=/path/to/verible-verilog-format` (default: `~/tools/verible/bin/verible-verilog-format`).
+## Where to look
 
-**Run `make unit-tests` after submodule changes** to catch bugs at module boundaries before integration.
+Each impl doc calls out non-obvious behavior and points to the relevant RTL files.
 
-For the full command list (`make verilator`, `make test-subword`, `make unit-tests`, `make riscv-tests`, `make riscv-test-<name>`, etc.), see [README.md](README.md#building-and-running). Test infrastructure and per-suite coverage are documented in [docs/verification.md](docs/verification.md).
+- [docs/impl/pipeline.md](docs/impl/pipeline.md) — FSM, state transitions, memory access
+- [docs/impl/decoder.md](docs/impl/decoder.md) — decode, control signals, illegal-instruction detection
+- [docs/impl/memory.md](docs/impl/memory.md) — `kv32_mem_fe` sub-word access, misaligned-access state machine
+- [docs/impl/csr.md](docs/impl/csr.md) — CSR file, M/S/U-mode, delegation, counters
+- [docs/impl/traps.md](docs/impl/traps.md) — trap detection, delegation, vectored vectors, MRET/SRET, interrupt taking
+- [docs/impl/mmu.md](docs/impl/mmu.md) — Sv32 TLB, PTW, PTW bus muxing, `sfence.vma`
 
-## Where to Look (implementation topics)
+## Cross-cutting gotchas
 
-Before editing RTL, read the relevant topic doc — each calls out non-obvious behavior and points to the relevant RTL files:
+- **`alu_op_valid` must be set for loads/stores** (ALU computes the effective address) or `ex_result` falls through to `pc_reg + 4`. See [docs/impl/decoder.md](docs/impl/decoder.md#alu_op_valid-gotcha).
+- **CSR write gating deliberately omits `!trap_taken`** to avoid a combinational loop through `csr_illegal → trap_taken`. See [docs/impl/traps.md](docs/impl/traps.md#csr-write-gating).
+- **Misaligned-access `non_crossing_ma` is only the `SH@addr[1:0]=01` case** — the load-side shift assumes this. See [docs/impl/memory.md](docs/impl/memory.md#misalignment-detection).
+- **LR/SC/AMO use multi-phase MEM state** — AMO reads, computes, then writes; SC checks reservation before storing. See [docs/impl/memory.md](docs/impl/memory.md#lrsc-and-amo-operations-a-extension).
+- **Privilege mode transitions** — `priv_mode` updates on trap entry, MRET, and SRET. Trap delegation uses `medeleg`/`mideleg`. See [docs/impl/traps.md](docs/impl/traps.md#trap-routing-and-delegation).
+- **Interrupt taking at ST_FETCH entry** — checked between instructions before the fetch request is issued. `irq_pending`/`irq_cause` come from the CSR module. See [docs/impl/traps.md](docs/impl/traps.md#interrupt-taking-flow).
 
-- [docs/pipeline.md](docs/pipeline.md) — FSM execution model, state transitions, memory access
-- [docs/decoder.md](docs/decoder.md) — decode, control signals, illegal-instruction detection
-- [docs/memory.md](docs/memory.md) — interface, `kv32_mem_fe` sub-word access, **misaligned-access state machine**
-- [docs/csr.md](docs/csr.md) — CSR file, M/S/U-mode CSRs, privilege-aware access control, delegation, counters
-- [docs/traps.md](docs/traps.md) — trap detection, delegation, vectored vectors, MRET/SRET, interrupt taking, privilege gating
+## Debugging tips
 
-A few cross-cutting gotchas worth flagging up front:
-
-- **`alu_op_valid` must be set for loads/stores** (ALU computes the effective address) or `ex_result` falls through to `pc_reg + 4`. See [docs/decoder.md](docs/decoder.md#alu_op_valid-gotcha).
-- **CSR write gating deliberately omits `!trap_taken`** to avoid a combinational loop through `csr_illegal → trap_taken`. See [docs/traps.md](docs/traps.md#csr-write-gating).
-- **Misaligned-access `non_crossing_ma` is only the `SH@addr[1:0]=01` case** — the load-side shift assumes this. See [docs/memory.md](docs/memory.md#misalignment-detection).
-- **LR/SC/AMO use multi-phase MEM state** — AMO reads, computes, then writes; SC checks reservation before storing. See [docs/memory.md](docs/memory.md#lrsc-and-amo-operations-a-extension).
-- **Privilege mode transitions** — `priv_mode` updates on trap entry, MRET, and SRET. Trap delegation uses `medeleg`/`mideleg` to route to S-mode. See [docs/traps.md](docs/traps.md#trap-routing-and-delegation).
-- **Interrupt taking at ST_FETCH entry** — checked between instructions before fetch request is issued. `irq_pending` and `irq_cause` from CSR module. See [docs/traps.md](docs/traps.md#interrupt-taking-flow).
-
-## Debugging Tips
-
-Inspect Verilator internal signals via `rootp->` or add `printf` in `tb_core.cpp`. Useful signal paths (all via `top->rootp->`):
+Inspect Verilator internal signals via `top->rootp->` or add `printf` in `tb_core.cpp`. Useful signal paths:
 
 - FSM state: `state`, `pc_reg`, `instr_reg`
 - Memory: `d_req`, `d_gnt`, `d_valid`, `d_addr`, `d_wdata`, `d_be`
@@ -51,17 +52,16 @@ Inspect Verilator internal signals via `rootp->` or add `printf` in `tb_core.cpp
 - Control: `mem_read`, `mem_write`, `alu_op_valid`, `trap_taken`, `csr_illegal`
 - Privilege: `priv_mode`, `trap_to_smode`, `irq_pending`, `irq_cause`
 
-For test infrastructure details (BRAM model, `mem_responder`, `--latency`, `--binary`) see [docs/verification.md](docs/verification.md).
+For test infrastructure (BRAM model, `mem_responder`, `--latency`, `--binary`) see [docs/verification/integration-tests.md](docs/verification/integration-tests.md).
 
-## Code Style
+## Code style
 
-- SystemVerilog 2012
-- `always_comb` for combinational, `always_ff @(posedge clk)` for sequential
-- `unique case` for case statements (helps lint)
-- Suppress Verilator warnings with `/* verilator lint_off */` / `/* lint_on */` pairs around the specific signal, not globally
-- Run `make lint` after every RTL change
-- Run `make format` after every RTL change (also catches syntax errors — verible parses the source before formatting)
+- SystemVerilog 2012.
+- `always_comb` for combinational, `always_ff @(posedge clk)` for sequential.
+- `unique case` for case statements (helps lint).
+- Suppress Verilator warnings with `/* verilator lint_off */` / `/* lint_on */` pairs around the specific signal, not globally.
+- Run `make lint` and `make format` after every RTL change.
 
-## Project Phases
+## Code review log
 
-See [SPEC.md §14](SPEC.md) for the full implementation order and phase definitions.
+Outstanding review items and dated review passes live in [docs/project/code_review.md](docs/project/code_review.md). Append new review passes as `## Review Pass — YYYY-MM-DD` sections; do not create separate review files.

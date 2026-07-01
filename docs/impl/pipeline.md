@@ -2,8 +2,8 @@
 
 Implementation details of the multi-cycle FSM that executes one instruction at a
 time. For the architectural specification (rationale, privilege modes, MMU), see
-[SPEC.md §1](../SPEC.md). For trap handling see [traps.md](traps.md); for memory
-access see [memory.md](memory.md).
+[../spec/01-overview.md](../spec/01-overview.md). For trap handling see
+[traps.md](traps.md); for memory access see [memory.md](memory.md).
 
 ```text
 FETCH → DECODE → EXEC → MEM → WRITEBACK → FETCH → ...

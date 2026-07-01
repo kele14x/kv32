@@ -4,7 +4,7 @@ Implementation of the memory interface, sub-word access, and misaligned-access
 handling. The memory front-end lives in `rtl/kv32_mem_fe.sv`; the core's
 FSM and dual-port wiring are in `rtl/kv32_core.sv`. For the architectural
 memory interface contract (signal list, alignment invariant, AXI adapter plan),
-see [SPEC.md §4](../SPEC.md).
+see [../spec/04-memory-interface.md](../spec/04-memory-interface.md).
 
 ## Dual memory interfaces
 

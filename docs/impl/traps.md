@@ -2,9 +2,9 @@
 
 Implementation of trap detection, delegation, and return paths for M/S/U
 privilege modes. For the architectural exception cause table, trap vector modes,
-and interrupt plan, see [SPEC.md §7](../SPEC.md). For CSR state updates on
-trap/MRET/SRET, see [csr.md](csr.md); for illegal-instruction sources in the
-decoder, see [decoder.md](decoder.md).
+and interrupt plan, see [../spec/06-traps.md](../spec/06-traps.md). For CSR
+state updates on trap/MRET/SRET, see [csr.md](csr.md); for illegal-instruction
+sources in the decoder, see [decoder.md](decoder.md).
 
 **Implemented (Phase 5)**: synchronous traps (illegal instruction, ECALL, EBREAK,
 access faults), asynchronous interrupt taking, M/S/U privilege modes, trap

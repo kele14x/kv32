@@ -4,7 +4,7 @@ A minimal RISC-V RV32IMAC soft core written in SystemVerilog, designed to boot L
 
 The core implements a multi-cycle state machine (FETCH/DECODE/EXEC/MEM/WRITEBACK) executing one instruction at a time — single issue, in-order, no forwarding or hazard detection. Phase 5 (RV32IMAC + M/S/U privilege modes) is complete; Phase 6 (Sv32 MMU) is in progress.
 
-See [SPEC.md](SPEC.md) for the full architectural specification (pipeline, CSR map, memory interface, privilege modes, MMU, boot flow).
+See [docs/spec/](docs/spec/index.md) for the full architectural specification (pipeline, CSR map, memory interface, privilege modes, MMU, boot flow), and [docs/index.md](docs/index.md) for a full documentation map covering implementation notes, verification, and roadmap.
 
 ## Prerequisites
 
@@ -177,12 +177,16 @@ tb/           Testbenches
   tb_core_mem.sv      Full-core SV BRAM + latency model
 tests/        External test suites
   riscv-tests/        riscv-tests submodule
-docs/         Topic-oriented implementation docs (pipeline, decoder, memory, csr, traps, verification)
+docs/         Documentation
+  spec/               Architectural specification (per-section files)
+  impl/               Implementation notes per RTL module
+  verification/       Test strategy, unit tests, riscv-tests
+  project/            Roadmap, future work, contributing, code review log
 ```
 
 ## Roadmap
 
-See [SPEC.md §14 (Implementation Order)](SPEC.md) for the full phase breakdown. Phase 5 (RV32IMAC + M/S/U privilege modes) is complete; Phase 6 (Sv32 MMU) is in progress.
+See [docs/project/roadmap.md](docs/project/roadmap.md) for the full phase breakdown. Phase 5 (RV32IMAC + M/S/U privilege modes) is complete; Phase 6 (Sv32 MMU) is in progress.
 
 ## License
 

@@ -1,7 +1,8 @@
 # M-mode CSR File
 
 Implementation of the CSR register file in `rtl/kv32_csr.sv`. For the
-architectural CSR map and privilege-mode plans, see [SPEC.md §3](../SPEC.md).
+architectural CSR map and privilege-mode plans, see
+[../spec/03-csr-map.md](../spec/03-csr-map.md).
 For the trap mechanism that drives `mepc`/`mcause`/`mtval` updates, see
 [traps.md](traps.md). For CSR instruction decoding, see [decoder.md](decoder.md).
 
